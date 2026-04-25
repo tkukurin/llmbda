@@ -5,7 +5,7 @@ Like lambda calculus, but the functions talk back.
 
 from __future__ import annotations
 
-import re
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +19,7 @@ class StepResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = True
 
+
 @dataclass
 class Step:
     """A named step with an optional system prompt describing its intent.
@@ -29,6 +30,7 @@ class Step:
     name: str
     fn: Callable[[StepContext], StepResult]
     system_prompt: str = ""
+
 
 @dataclass
 class StepContext:
@@ -42,11 +44,13 @@ class StepContext:
     steps: list[Step] = field(default_factory=list)
     prior: dict[str, StepResult] = field(default_factory=dict)
 
+
 @dataclass
 class Skill:
     """A named sequence of steps."""
     name: str
     steps: list[Step] = field(default_factory=list)
+
 
 @dataclass
 class SkillResult:
@@ -57,18 +61,21 @@ class SkillResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     trace: dict[str, StepResult] = field(default_factory=dict)
 
+
 def _bind_caller(raw: Caller, step: Step) -> Caller:
     """Wrap *raw* so ``messages=`` kwargs get *step*'s system prompt prepended."""
     if not step.system_prompt:
         return raw
     def bound(**kwargs: Any) -> Any:
-        msgs = kwargs.get("messages", [])
+        if "messages" not in kwargs: return raw(**kwargs)
+        msgs = kwargs["messages"] or []
         kwargs["messages"] = [
             {"role": "system", "content": step.system_prompt},
             *msgs,
         ]
         return raw(**kwargs)
     return bound
+
 
 def iter_skill(
     skill: Skill,
@@ -77,17 +84,22 @@ def iter_skill(
 ) -> Iterator[tuple[str, StepResult]]:
     """Yield ``(step_name, result)`` for each executed step, in order.
 
-    The last step is always treated as resolved, so the skill returns something.
+    Execution stops when a step resolves or after the final step.
     """
-    ctx = StepContext(entry=entry, caller=caller, steps=skill.steps)
-    last_idx = len(skill.steps) - 1
-    for i, step in enumerate(skill.steps):
+    steps = list(skill.steps)
+    if dups := [k for k, n in Counter(s.name for s in steps).items() if n > 1]:
+        raise ValueError(dups)
+
+    ctx = StepContext(entry=entry, caller=caller, steps=steps)
+    last_idx = len(steps) - 1
+    for i, step in enumerate(steps):
         ctx.caller = _bind_caller(caller, step)
         result = step.fn(ctx)
         ctx.prior[step.name] = result
+        should_stop = result.resolved or i == last_idx
         yield step.name, result
-        if result.resolved or i == last_idx:
-            return
+        if should_stop: return
+
 
 def run_skill(
     skill: Skill,
@@ -112,16 +124,23 @@ def run_skill(
         trace=trace,
     )
 
-_FENCE_RE = re.compile(
-    r"^```(?:json|JSON)?\s*\n?(.*?)\n?\s*```$",
-    re.DOTALL,
-)
+
+_FENCE = "```"
+
 
 def strip_fences(text: str) -> str:
     """Remove Markdown code fences from *text*, if any."""
     text = text.strip()
-    m = _FENCE_RE.match(text)
-    return m.group(1).strip() if m else text
+    if not text.startswith(_FENCE) or not text.endswith(_FENCE):
+        return text
+    lines = text.splitlines()
+    match lines:
+        case [opening, *body, closing] if (
+            opening.startswith(_FENCE) and closing.strip() == _FENCE
+        ):
+            return "\n".join(body).strip()
+    return text.removeprefix(_FENCE).removesuffix(_FENCE).strip()
+
 
 __all__ = [
     "Caller",

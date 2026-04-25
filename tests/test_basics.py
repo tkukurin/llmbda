@@ -104,6 +104,22 @@ def test_prior_accumulates():
     assert result.trace["deposit"].metadata == {"order": 1}
 
 
+def test_duplicate_step_names_raise_before_running():
+    called: list[str] = []
+
+    def _step(_ctx):
+        called.append("ran")
+        return StepResult(value=None, resolved=False)
+
+    skill = Skill(
+        name="dup",
+        steps=[Step("same", _step), Step("same", _step)],
+    )
+    with pytest.raises(ValueError, match="same"):
+        list(iter_skill(skill, {}, _noop))
+    assert called == []
+
+
 def test_empty_skill():
     skill = Skill(name="noop")
     result = run_skill(skill, {"x": 1}, _noop)
@@ -169,6 +185,31 @@ def test_iter_stops_after_resolved():
     assert [name for name, _ in yielded] == ["stop"]
 
 
+def test_iter_stop_decision_survives_result_mutation():
+    called: list[str] = []
+
+    def _stop(_ctx):
+        return StepResult(value="done")
+
+    def _never(_ctx):
+        called.append("never")
+        return StepResult(value="unreachable")
+
+    skill = Skill(
+        name="s",
+        steps=[Step("stop", _stop), Step("never", _never)],
+    )
+    it = iter_skill(skill, {}, _noop)
+    name, result = next(it)
+    assert name == "stop"
+
+    result.resolved = False
+
+    with pytest.raises(StopIteration):
+        next(it)
+    assert called == []
+
+
 def test_iter_break_early():
     seen: list[str] = []
     skill = Skill(
@@ -221,6 +262,26 @@ def test_caller_prepends_step_system_prompt():
         {"role": "system", "content": "be terse"},
         {"role": "user", "content": "hi"},
     ]]
+
+
+def test_caller_does_not_inject_prompt_without_messages():
+    """System prompts are only added to explicit messages kwargs."""
+    captured: list[dict[str, object]] = []
+
+    def spy_caller(**kwargs):
+        captured.append(kwargs)
+        return "ok"
+
+    def llm_step(ctx):
+        ctx.caller(model="noop")
+        return StepResult(value="done")
+
+    skill = Skill(
+        name="s",
+        steps=[Step("llm", llm_step, system_prompt="be terse")],
+    )
+    run_skill(skill, {}, spy_caller)
+    assert captured == [{"model": "noop"}]
 
 
 def test_caller_passes_through_when_prompt_empty():
