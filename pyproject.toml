@@ -41,3 +41,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR2004"]
+"examples/**" = [
+  "B018",    # bare expressions are notebook cell outputs
+  "E402",    # imports introduced mid-notebook are fine
+  "ERA001",  # commented-out code is often an optional snippet
+  "INP001",  # examples/ is not a package
+  "PLR2004", # magic numbers are fine in illustrative examples
+]
