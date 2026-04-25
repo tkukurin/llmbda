@@ -36,6 +36,7 @@ class StepContext:
     entry: Any
     caller: Caller
     steps: list[Step] = field(default_factory=list)
+    step: Step | None = None  # set by the runtime before each fn call
     prior: dict[str, StepResult] = field(default_factory=dict)
 
 @dataclass
@@ -65,6 +66,7 @@ def iter_skill(
     ctx = StepContext(entry=entry, caller=caller, steps=skill.steps)
     last_idx = len(skill.steps) - 1
     for i, step in enumerate(skill.steps):
+        ctx.step = step
         result = step.fn(ctx)
         ctx.prior[step.name] = result
         yield step.name, result

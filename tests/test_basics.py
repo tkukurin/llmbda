@@ -200,6 +200,25 @@ def test_iter_empty_skill_yields_nothing():
     assert list(iter_skill(Skill(name="noop"), {}, _noop)) == []
 
 
+def test_ctx_step_tracks_executing_step():
+    """ctx.step is the currently-running Step; lets steps read their own prompt."""
+    seen: list[tuple[str, str]] = []
+
+    def spy(ctx):
+        seen.append((ctx.step.name, ctx.step.system_prompt))
+        return StepResult(value=None, resolved=False)
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Step("a", spy, system_prompt="prompt-a"),
+            Step("b", spy, system_prompt="prompt-b"),
+        ],
+    )
+    run_skill(skill, {}, _noop)
+    assert seen == [("a", "prompt-a"), ("b", "prompt-b")]
+
+
 def test_caller_available_in_context():
     recorded = []
 
