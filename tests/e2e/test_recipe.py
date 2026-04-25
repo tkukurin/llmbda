@@ -1,5 +1,7 @@
 """End-to-end multi-step pipeline test for llmbda."""
 
+from __future__ import annotations
+
 import json
 import re
 
@@ -117,7 +119,6 @@ extract_cook_time = Skill(
         Step("llm_diagnose", llm_diagnose, system_prompt=LLM_SYSTEM_PROMPT),
     ],
 )
-
 
 
 TEST_CASES = [
