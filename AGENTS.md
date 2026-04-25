@@ -16,6 +16,14 @@
 - **Flat over nested.** Minimise nesting. Especially: no `try`/`except` for control flow when a conditional check would do.
 - **Modern Python.** Use `X | Y` unions, not `Optional[X]`. Always `from __future__ import annotations`.
 
+## Git commits & documentation
+
+- **Bullet points, not prose.** Commit bodies, docstrings beyond one line, and README sections are bulleted.
+- **Subject line: `type(scope): summary`.** Imperative, lowercase, no trailing period.
+- **Body bullets are terse.** One fact per bullet. No narrative, no restating the diff, no justification paragraphs.
+- **Breaking changes:** append `!` to the type and add a `BREAKING CHANGE:` footer with a single-line migration note.
+- **No marketing.** Don't explain why something is "clean" or "elegant" — state what changed.
+
 ## Testing
 
 - pytest, plain functions or classes (no unittest).
@@ -26,3 +34,4 @@
 
 - `uv` for dependency management.
 - **Config as code.** No configuration file formats (YAML, TOML, JSON) for runtime behaviour. Skills and pipelines are Python objects composed with plain Python.
+- **Notebooks are Jupytext `# %%` scripts, never `.ipynb`.** Keep notebooks as plain `.py` files under `examples/`, using the percent cell format (`# %%` for code, `# %% [markdown]` for prose). This keeps them diffable, lintable, importable, and runnable as normal Python; editors like VS Code, PyCharm, and Jupytext open them as cells. Never commit `.ipynb` files.
