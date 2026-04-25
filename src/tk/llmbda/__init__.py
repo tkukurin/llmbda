@@ -6,32 +6,30 @@ Like lambda calculus, but the functions talk back.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, NamedTuple
 
-
-class _Msg(Protocol): content: str
-class _Choice(Protocol): message: _Msg
-class Completion(Protocol): choices: list[_Choice]
-
-Caller = Callable[..., Completion]
+Caller = Callable[..., Any]
 
 @dataclass
 class StepResult:
-    """What a single step produces."""
+    """What a single step produces. ``terminal=True`` short-circuits the skill."""
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    terminal: bool = False
+    terminal: bool = True
 
 @dataclass
 class StepContext:
     """Accumulator threaded through the step sequence."""
     entry: dict[str, Any]
-    caller: Caller | None = None
+    caller: Caller
     prior: dict[str, StepResult] = field(default_factory=dict)
 
-Step = Callable[[StepContext], StepResult]
+class Step(NamedTuple):
+    """A named step: a label for ``ctx.prior`` plus the callable that runs."""
+    name: str
+    fn: Callable[[StepContext], StepResult]
 
 @dataclass
 class Skill:
@@ -40,41 +38,52 @@ class Skill:
     steps: list[Step] = field(default_factory=list)
     system_prompt: str = ""
 
+@dataclass
+class SkillResult:
+    """What a skill execution produces, with a trace of every step that ran."""
+    skill: str
+    resolved_by: str
+    value: Any
+    metadata: dict[str, Any] = field(default_factory=dict)
+    trace: dict[str, StepResult] = field(default_factory=dict)
+
+def iter_skill(
+    skill: Skill,
+    entry: dict[str, Any],
+    caller: Caller,
+) -> Iterator[tuple[str, StepResult]]:
+    """Yield ``(step_name, result)`` for each executed step, in order."""
+    ctx = StepContext(entry=entry, caller=caller)
+    last_idx = len(skill.steps) - 1
+    for i, step in enumerate(skill.steps):
+        result = step.fn(ctx)
+        ctx.prior[step.name] = result
+        yield step.name, result
+        if result.terminal or i == last_idx:
+            return
+
 def run_skill(
     skill: Skill,
     entry: dict[str, Any],
-    caller: Caller | None = None,
-) -> StepResult:
-    """Execute *skill*'s steps in order and return a ``StepResult``."""
-    ctx = StepContext(entry=entry, caller=caller)
+    caller: Caller,
+) -> SkillResult:
+    """Execute *skill* to completion and return the final ``SkillResult``."""
+    trace: dict[str, StepResult] = {}
+    last: StepResult | None = None
+    last_name = "(empty)"
+    for name, result in iter_skill(skill, entry, caller):
+        trace[name] = result
+        last, last_name = result, name
 
-    for step in skill.steps:
-        step_name = getattr(step, "__name__", str(step))
-        result = step(ctx)
-        ctx.prior[step_name] = result
-
-        if result.terminal:
-            result.metadata = {
-                "skill": skill.name, "resolved_by": step_name, **result.metadata
-            }
-            return result
-
-    if not skill.steps:
-        return StepResult(
-            value=None, metadata={"skill": skill.name, "resolved_by": "(empty)"}
-        )
-
-    last = skill.steps[-1]
-    last_name = getattr(last, "__name__", str(last))
-    result = ctx.prior[last_name]
-    result.metadata = {
-        "skill": skill.name, "resolved_by": last_name, **result.metadata
-    }
-    return result
-
-def compose(*skills: Skill) -> str:
-    """Concatenate system prompts from multiple skills into one string."""
-    return "\n\n".join(s.system_prompt for s in skills if s.system_prompt)
+    if last is None:
+        return SkillResult(skill=skill.name, resolved_by="(empty)", value=None)
+    return SkillResult(
+        skill=skill.name,
+        resolved_by=last_name,
+        value=last.value,
+        metadata=last.metadata,
+        trace=trace,
+    )
 
 _FENCE_RE = re.compile(
     r"^```(?:json|JSON)?\s*\n?(.*?)\n?\s*```$",
@@ -82,19 +91,19 @@ _FENCE_RE = re.compile(
 )
 
 def strip_fences(text: str) -> str:
-    """Remove Markdown code fences."""
+    """Remove Markdown code fences from *text*, if any."""
     text = text.strip()
     m = _FENCE_RE.match(text)
     return m.group(1).strip() if m else text
 
 __all__ = [
     "Caller",
-    "Completion",
     "Skill",
+    "SkillResult",
     "Step",
     "StepContext",
     "StepResult",
-    "compose",
+    "iter_skill",
     "run_skill",
     "strip_fences",
 ]
