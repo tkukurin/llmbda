@@ -19,8 +19,8 @@ result = run_skill(skill, {"name": "\u03bb"}, caller=lambda **_: None)
 # SkillResult(skill="greeter", resolved_by="greet", value="hello, \u03bb", ...)
 ```
 
-- **`caller`** — OpenAI-compatible `Callable[..., str]`. Required; pass a noop for deterministic-only skills.
-- **`Step.system_prompt`** — the runtime auto-prepends it as a system message on any `ctx.caller(messages=...)` call inside the step. Don't add a system message yourself.
-- **`StepResult.resolved`** — defaults to `True`; return `resolved=False` to fall through to the next step. The last step is always treated as resolved.
+- **`caller`** — OpenAI-style keyword callable. Steps usually call it as `ctx.caller(messages=[...])`; it may return any provider-specific value the step knows how to handle. Required; pass a noop for deterministic-only skills.
+- **`Step.system_prompt`** — when non-empty, the runtime binds `ctx.caller` so calls with `messages=[...]` receive this prompt as the first system message. Don't add the same system message yourself.
+- **`StepResult.resolved`** — defaults to `True`; return `resolved=False` to fall through to the next step. Execution stops after the final step regardless, and the trace preserves the flag that step returned.
 - **`ctx.steps`, `ctx.prior`** — the plan and prior-step outcomes, for steps that cross-check or summarise earlier work.
 - **`iter_skill`** — same execution as `run_skill`, but yields `(step_name, result)` for live observation or early exit.
