@@ -14,45 +14,21 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-
-# -------------------------------------------------------------------
-# Caller protocol
-# -------------------------------------------------------------------
-
-
 class Caller(Protocol):
     """Minimal contract for an LLM caller.
-
-    Production::
-
-        lambda **kw: client.chat.completions.create(**kw)
-                     .choices[0].message.content
-
-    Testing::
-
+        lambda **kw: ...completions.create(**kw).choices[0].message.content
         lambda **kw: '{"answer": 42}'
     """
-
     def __call__(self, **kwargs: Any) -> str: ...
-
-
-# -------------------------------------------------------------------
-# Result / Context
-# -------------------------------------------------------------------
 
 
 @dataclass
 class StepResult:
     """What a single step produces.
 
-    Attributes
-    ----------
-    value
-        The step output (arbitrary JSON-serialisable data).
-    metadata
-        Free-form dict persisted alongside the value.
-    terminal
-        If ``True``, :func:`run_skill` stops here.
+    value: step output (arbitrary JSON-serialisable data).
+    metadata: dict persisted alongside the value.
+    terminal: If ``True``, :func:`run_skill` stops here.
     """
 
     value: Any = None
@@ -64,27 +40,16 @@ class StepResult:
 class StepContext:
     """Accumulator threaded through the step sequence.
 
-    Attributes
-    ----------
-    entry
-        The raw data entry being processed.
-    caller
-        LLM caller (``None`` for deterministic-only runs).
-    system_prompt
-        The skill-level system prompt; LLM-using steps read this.
-    prior
-        Results of previous steps, keyed by step name.
+    entry: The raw data entry being processed.
+    caller: LLM caller (``None`` for deterministic-only runs).
+    system_prompt: The skill-level system prompt; LLM-using steps read this.
+    prior: Results of previous steps, keyed by step name.
     """
 
     entry: dict[str, Any]
     caller: Caller | None = None
     system_prompt: str = ""
     prior: dict[str, StepResult] = field(default_factory=dict)
-
-
-# -------------------------------------------------------------------
-# Step / Skill
-# -------------------------------------------------------------------
 
 
 @dataclass

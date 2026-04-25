@@ -35,8 +35,7 @@ def run_skill(
         if result.terminal:
             return _wrap(skill.name, step.name, result)
 
-    # No step was explicitly terminal -> return the last one.
-    if not skill.steps:
+    if not skill.steps:  # no explicit terminal step -> return last
         return _wrap(skill.name, "(empty)", StepResult())
 
     last = skill.steps[-1]
