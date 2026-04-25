@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from tk.llmbda import (
     Skill,
     SkillResult,
@@ -224,3 +226,33 @@ def test_step_can_call_caller():
     skill = Skill(name="chat", steps=[Step("llm", llm_step)])
     result = run_skill(skill, {}, fake_caller)
     assert result.value == "hello back"
+
+
+def test_run_skill_propagates_step_exception():
+    def boom(_ctx):
+        msg = "step exploded"
+        raise RuntimeError(msg)
+
+    skill = Skill(name="err", steps=[Step("boom", boom)])
+    with pytest.raises(RuntimeError, match="step exploded"):
+        run_skill(skill, {}, _noop)
+
+
+def test_iter_skill_propagates_and_preserves_prior_yields():
+    seen: list[str] = []
+
+    def ok(_ctx):
+        return StepResult(value="ok", terminal=False)
+
+    def boom(_ctx):
+        msg = "step exploded"
+        raise RuntimeError(msg)
+
+    skill = Skill(name="err", steps=[Step("ok", ok), Step("boom", boom)])
+    it = iter_skill(skill, {}, _noop)
+    name, result = next(it)
+    seen.append(name)
+    assert result.value == "ok"
+    with pytest.raises(RuntimeError, match="step exploded"):
+        next(it)
+    assert seen == ["ok"]
