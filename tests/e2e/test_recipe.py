@@ -12,6 +12,32 @@ def _noop(**_kw: object) -> None:
     return None
 
 
+PARSE_MINUTES_PROMPT = "Find an exact minute match like '45 mins' or '30 minutes'."
+PARSE_HOURS_PROMPT = (
+    "Find an exact hour match like '1.5 hours' or '2 hrs' and convert to minutes."
+)
+
+LLM_SYSTEM_PROMPT = """\
+You are a culinary data extractor.
+You receive a JSON object with:
+- "text": A messy snippet from a recipe blog.
+- "prior_steps": The earlier parsers that ran, each with its own intent
+  (system_prompt) and outcome (metadata).
+
+Your task: Extract the cooking time in minutes, or explain why it's missing.
+
+Return ONLY a JSON object with exactly two keys:
+{
+  "value": <int minutes if found/inferred, else null>,
+  "diagnosis": "<one-sentence explanation of why regex failed, or why time is absent>"
+}
+
+Rules:
+- If the text says "half an hour", value is 30.
+- If it relies on visual cues ("until golden brown") with no time, value is null.
+"""
+
+
 def parse_minutes(ctx: StepContext) -> StepResult:
     """Try to find an exact minute match (e.g., '45 mins')."""
     text = ctx.entry.get("text", "").lower()
@@ -23,7 +49,7 @@ def parse_minutes(ctx: StepContext) -> StepResult:
         return StepResult(value=mins, metadata={"reason": "matched_minutes"})
     print("  -> Failed: No minute regex match.")
     return StepResult(
-        value=None, metadata={"reason": "no_minute_match"}, resolved=False
+        value=None, metadata={"reason": "no_minute_match"}, resolved=False,
     )
 
 
@@ -40,39 +66,32 @@ def parse_hours(ctx: StepContext) -> StepResult:
     return StepResult(value=None, metadata={"reason": "no_hour_match"}, resolved=False)
 
 
-SYSTEM_PROMPT = """\
-You are a culinary data extractor.
-You receive a JSON object with:
-- "text": A messy snippet from a recipe blog.
-- "prior_steps": The results of our deterministic regex parsers which failed.
-
-Your task: Extract the cooking time in minutes, or explain why it's missing.
-
-Return ONLY a JSON object with exactly two keys:
-{
-  "value": <int minutes if found/inferred, else null>,
-  "diagnosis": "<one-sentence explanation of why regex failed, or why time is absent>"
-}
-
-Rules:
-- If the text says "half an hour", value is 30.
-- If it relies on visual cues ("until golden brown") with no time, value is null.
-"""
+def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
+    """Serialise prior steps with their intent and outcome for LLM context."""
+    return [
+        {
+            "name": s.name,
+            "system_prompt": s.system_prompt,
+            "metadata": ctx.prior[s.name].metadata,
+        }
+        for s in ctx.steps
+        if s.name in ctx.prior
+    ]
 
 
 def llm_diagnose(ctx: StepContext) -> StepResult:
     """Use an LLM to semantically parse the time or diagnose the failure."""
     print("[Trace] Running Step 3: llm_diagnose (Fallback Triggered)")
-    prior_meta = {k: v.metadata for k, v in ctx.prior.items()}
     user_msg = json.dumps(
-        {"text": ctx.entry.get("text", ""), "prior_steps": prior_meta}, indent=2
+        {"text": ctx.entry.get("text", ""), "prior_steps": _prior_steps_payload(ctx)},
+        indent=2,
     )
     print(f"  -> Prompting LLM with prior context:\n{user_msg}")
 
     try:
         raw_response = ctx.caller(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ]
         )
@@ -95,11 +114,10 @@ def llm_diagnose(ctx: StepContext) -> StepResult:
 
 extract_cook_time = Skill(
     name="extract_cook_time",
-    system_prompt=SYSTEM_PROMPT,
     steps=[
-        Step("parse_minutes", parse_minutes),
-        Step("parse_hours", parse_hours),
-        Step("llm_diagnose", llm_diagnose),
+        Step("parse_minutes", parse_minutes, system_prompt=PARSE_MINUTES_PROMPT),
+        Step("parse_hours", parse_hours, system_prompt=PARSE_HOURS_PROMPT),
+        Step("llm_diagnose", llm_diagnose, system_prompt=LLM_SYSTEM_PROMPT),
     ],
 )
 
@@ -206,6 +224,24 @@ def test_llm_diagnose_parse_error():
     result = llm_diagnose(ctx)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
+
+
+def test_prior_steps_payload_includes_system_prompts():
+    """llm_diagnose receives earlier steps' intents, not just their metadata."""
+    captured: dict[str, str] = {}
+
+    def fake(**kwargs):
+        captured["user"] = kwargs["messages"][1]["content"]
+        captured["system"] = kwargs["messages"][0]["content"]
+        return '{"value": null, "diagnosis": "nothing"}'
+
+    run_skill(extract_cook_time, {"text": "cook until bubbly"}, caller=fake)
+    payload = json.loads(captured["user"])
+    names = [s["name"] for s in payload["prior_steps"]]
+    assert names == ["parse_minutes", "parse_hours"]
+    assert payload["prior_steps"][0]["system_prompt"] == PARSE_MINUTES_PROMPT
+    assert payload["prior_steps"][1]["system_prompt"] == PARSE_HOURS_PROMPT
+    assert captured["system"] == LLM_SYSTEM_PROMPT
 
 
 @pytest.mark.e2e

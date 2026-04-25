@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple
+from typing import Any
 
 Caller = Callable[..., Any]
 
@@ -20,23 +20,29 @@ class StepResult:
     resolved: bool = True
 
 @dataclass
-class StepContext:
-    """Accumulator threaded through the step sequence."""
-    entry: dict[str, Any]
-    caller: Caller
-    prior: dict[str, StepResult] = field(default_factory=dict)
+class Step:
+    """A named step with an optional system prompt describing its intent.
 
-class Step(NamedTuple):
-    """A named step: a label for ``ctx.prior`` plus the callable that runs."""
+    The prompt is the step's job description: LLM steps forward it to the model;
+    deterministic steps expose it so later LLM steps can include it as context.
+    """
     name: str
     fn: Callable[[StepContext], StepResult]
+    system_prompt: str = ""
+
+@dataclass
+class StepContext:
+    """Accumulator threaded through the step sequence."""
+    entry: Any
+    caller: Caller
+    steps: list[Step] = field(default_factory=list)
+    prior: dict[str, StepResult] = field(default_factory=dict)
 
 @dataclass
 class Skill:
-    """A named sequence of steps with a shared system prompt."""
+    """A named sequence of steps."""
     name: str
     steps: list[Step] = field(default_factory=list)
-    system_prompt: str = ""
 
 @dataclass
 class SkillResult:
@@ -49,11 +55,14 @@ class SkillResult:
 
 def iter_skill(
     skill: Skill,
-    entry: dict[str, Any],
+    entry: Any,
     caller: Caller,
 ) -> Iterator[tuple[str, StepResult]]:
-    """Yield ``(step_name, result)`` for each executed step, in order."""
-    ctx = StepContext(entry=entry, caller=caller)
+    """Yield ``(step_name, result)`` for each executed step, in order.
+
+    The last step is always treated as resolved, so the skill returns something.
+    """
+    ctx = StepContext(entry=entry, caller=caller, steps=skill.steps)
     last_idx = len(skill.steps) - 1
     for i, step in enumerate(skill.steps):
         result = step.fn(ctx)
@@ -64,7 +73,7 @@ def iter_skill(
 
 def run_skill(
     skill: Skill,
-    entry: dict[str, Any],
+    entry: Any,
     caller: Caller,
 ) -> SkillResult:
     """Execute *skill* to completion and return the final ``SkillResult``."""

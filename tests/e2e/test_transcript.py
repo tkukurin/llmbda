@@ -10,29 +10,17 @@ def _noop(**_kw: object) -> None:
     return None
 
 
-def parse_explicit_todo(ctx: StepContext) -> StepResult:
-    """Extract an explicitly marked TODO and owner."""
-    text = ctx.entry.get("transcript", "")
-    print(f"\n[Trace] Running parse_explicit_todo on '{text}'")
-    match = re.search(r"TODO:\s*(.+?)\s+@(\w+)", text, re.IGNORECASE)
-    if match:
-        task, owner = match.groups()
-        print(f"  -> Success: {task} assigned to {owner}")
-        return StepResult(
-            value={"task": task.strip(), "owner": owner.strip()},
-            metadata={"reason": "explicit_todo_match"},
-        )
-    print("  -> Failed: No explicit TODO tag found.")
-    return StepResult(
-        value=None, metadata={"reason": "no_explicit_todo"}, resolved=False
-    )
+PARSE_EXPLICIT_TODO_PROMPT = (
+    "Find an explicitly tagged action item of the form "
+    "'TODO: <task> @<owner>' and extract the task and owner."
+)
 
-
-SYSTEM_PROMPT = """\
+LLM_SYSTEM_PROMPT = """\
 You are an AI meeting assistant.
 You receive a JSON object with:
 - "transcript": A snippet of dialogue from a meeting.
-- "prior_steps": Output from deterministic parsers that failed.
+- "prior_steps": The earlier parsers that ran, each with its own intent
+  (system_prompt) and outcome (metadata).
 
 Your task: Extract the single most important action item
 and its owner from the transcript.
@@ -50,12 +38,45 @@ Rules:
 """
 
 
+def parse_explicit_todo(ctx: StepContext) -> StepResult:
+    """Extract an explicitly marked TODO and owner."""
+    text = ctx.entry.get("transcript", "")
+    print(f"\n[Trace] Running parse_explicit_todo on '{text}'")
+    match = re.search(r"TODO:\s*(.+?)\s+@(\w+)", text, re.IGNORECASE)
+    if match:
+        task, owner = match.groups()
+        print(f"  -> Success: {task} assigned to {owner}")
+        return StepResult(
+            value={"task": task.strip(), "owner": owner.strip()},
+            metadata={"reason": "explicit_todo_match"},
+        )
+    print("  -> Failed: No explicit TODO tag found.")
+    return StepResult(
+        value=None, metadata={"reason": "no_explicit_todo"}, resolved=False,
+    )
+
+
+def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
+    """Serialise prior steps with their intent and outcome for LLM context."""
+    return [
+        {
+            "name": s.name,
+            "system_prompt": s.system_prompt,
+            "metadata": ctx.prior[s.name].metadata,
+        }
+        for s in ctx.steps
+        if s.name in ctx.prior
+    ]
+
+
 def llm_extract_action(ctx: StepContext) -> StepResult:
     """Use an LLM to semantically infer tasks from conversational transcripts."""
     print("[Trace] Running llm_extract_action (Fallback Triggered)")
-    prior_meta = {k: v.metadata for k, v in ctx.prior.items()}
     user_msg = json.dumps(
-        {"transcript": ctx.entry.get("transcript", ""), "prior_steps": prior_meta},
+        {
+            "transcript": ctx.entry.get("transcript", ""),
+            "prior_steps": _prior_steps_payload(ctx),
+        },
         indent=2,
     )
     print(f"  -> Prompting LLM with prior context:\n{user_msg}")
@@ -63,7 +84,7 @@ def llm_extract_action(ctx: StepContext) -> StepResult:
     try:
         raw_response = ctx.caller(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
             ]
         )
@@ -83,10 +104,13 @@ def llm_extract_action(ctx: StepContext) -> StepResult:
 
 extract_action_item = Skill(
     name="extract_action_item",
-    system_prompt=SYSTEM_PROMPT,
     steps=[
-        Step("parse_explicit_todo", parse_explicit_todo),
-        Step("llm_extract_action", llm_extract_action),
+        Step(
+            "parse_explicit_todo",
+            parse_explicit_todo,
+            system_prompt=PARSE_EXPLICIT_TODO_PROMPT,
+        ),
+        Step("llm_extract_action", llm_extract_action, system_prompt=LLM_SYSTEM_PROMPT),
     ],
 )
 
@@ -175,6 +199,27 @@ def test_llm_extract_action_parse_error():
     result = llm_extract_action(ctx)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
+
+
+def test_prior_steps_payload_includes_system_prompts():
+    """llm_extract_action receives earlier step intents, not just their metadata."""
+    captured: dict[str, str] = {}
+
+    def fake(**kwargs):
+        captured["user"] = kwargs["messages"][1]["content"]
+        captured["system"] = kwargs["messages"][0]["content"]
+        return '{"task": null, "owner": null}'
+
+    run_skill(
+        extract_action_item,
+        {"transcript": "Great meeting everyone."},
+        caller=fake,
+    )
+    payload = json.loads(captured["user"])
+    names = [s["name"] for s in payload["prior_steps"]]
+    assert names == ["parse_explicit_todo"]
+    assert payload["prior_steps"][0]["system_prompt"] == PARSE_EXPLICIT_TODO_PROMPT
+    assert captured["system"] == LLM_SYSTEM_PROMPT
 
 
 @pytest.mark.e2e
