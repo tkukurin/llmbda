@@ -32,11 +32,14 @@ class Step:
 
 @dataclass
 class StepContext:
-    """Accumulator threaded through the step sequence."""
+    """Accumulator threaded through the step sequence.
+
+    ``caller`` is per-step: the runtime rebinds it to prepend the current
+    step's ``system_prompt`` to any ``messages=`` kwarg before forwarding.
+    """
     entry: Any
     caller: Caller
     steps: list[Step] = field(default_factory=list)
-    step: Step | None = None  # set by the runtime before each fn call
     prior: dict[str, StepResult] = field(default_factory=dict)
 
 @dataclass
@@ -54,6 +57,19 @@ class SkillResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     trace: dict[str, StepResult] = field(default_factory=dict)
 
+def _bind_caller(raw: Caller, step: Step) -> Caller:
+    """Wrap *raw* so ``messages=`` kwargs get *step*'s system prompt prepended."""
+    if not step.system_prompt:
+        return raw
+    def bound(**kwargs: Any) -> Any:
+        msgs = kwargs.get("messages", [])
+        kwargs["messages"] = [
+            {"role": "system", "content": step.system_prompt},
+            *msgs,
+        ]
+        return raw(**kwargs)
+    return bound
+
 def iter_skill(
     skill: Skill,
     entry: Any,
@@ -66,7 +82,7 @@ def iter_skill(
     ctx = StepContext(entry=entry, caller=caller, steps=skill.steps)
     last_idx = len(skill.steps) - 1
     for i, step in enumerate(skill.steps):
-        ctx.step = step
+        ctx.caller = _bind_caller(caller, step)
         result = step.fn(ctx)
         ctx.prior[step.name] = result
         yield step.name, result

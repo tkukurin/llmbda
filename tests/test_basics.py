@@ -200,23 +200,76 @@ def test_iter_empty_skill_yields_nothing():
     assert list(iter_skill(Skill(name="noop"), {}, _noop)) == []
 
 
-def test_ctx_step_tracks_executing_step():
-    """ctx.step is the currently-running Step; lets steps read their own prompt."""
-    seen: list[tuple[str, str]] = []
+def test_caller_prepends_step_system_prompt():
+    """Runtime binds ctx.caller to auto-prepend the step's system_prompt."""
+    seen: list[list[dict[str, str]]] = []
 
-    def spy(ctx):
-        seen.append((ctx.step.name, ctx.step.system_prompt))
+    def spy_caller(**kwargs):
+        seen.append(kwargs["messages"])
+        return "ok"
+
+    def llm_step(ctx):
+        ctx.caller(messages=[{"role": "user", "content": "hi"}])
+        return StepResult(value="done")
+
+    skill = Skill(
+        name="s",
+        steps=[Step("llm", llm_step, system_prompt="be terse")],
+    )
+    run_skill(skill, {}, spy_caller)
+    assert seen == [[
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "hi"},
+    ]]
+
+
+def test_caller_passes_through_when_prompt_empty():
+    """No system_prompt on the step => caller forwards messages unchanged."""
+    seen: list[list[dict[str, str]]] = []
+
+    def spy_caller(**kwargs):
+        seen.append(kwargs["messages"])
+        return "ok"
+
+    def llm_step(ctx):
+        ctx.caller(messages=[{"role": "user", "content": "hi"}])
+        return StepResult(value="done")
+
+    skill = Skill(name="s", steps=[Step("llm", llm_step)])
+    run_skill(skill, {}, spy_caller)
+    assert seen == [[{"role": "user", "content": "hi"}]]
+
+
+def test_caller_rebinds_between_steps():
+    """Each step sees a caller bound to its own prompt, not a prior step's."""
+    captured: list[list[dict[str, str]]] = []
+
+    def capturing(**kwargs):
+        captured.append(kwargs["messages"])
+        return "ok"
+
+    def fn_a(ctx):
+        ctx.caller(messages=[{"role": "user", "content": "a"}])
         return StepResult(value=None, resolved=False)
+
+    def fn_b(ctx):
+        ctx.caller(messages=[{"role": "user", "content": "b"}])
+        return StepResult(value="done")
 
     skill = Skill(
         name="s",
         steps=[
-            Step("a", spy, system_prompt="prompt-a"),
-            Step("b", spy, system_prompt="prompt-b"),
+            Step("a", fn_a, system_prompt="prompt-a"),
+            Step("b", fn_b, system_prompt="prompt-b"),
         ],
     )
-    run_skill(skill, {}, _noop)
-    assert seen == [("a", "prompt-a"), ("b", "prompt-b")]
+    run_skill(skill, {}, capturing)
+    assert captured == [
+        [{"role": "system", "content": "prompt-a"},
+         {"role": "user", "content": "a"}],
+        [{"role": "system", "content": "prompt-b"},
+         {"role": "user", "content": "b"}],
+    ]
 
 
 def test_caller_available_in_context():
