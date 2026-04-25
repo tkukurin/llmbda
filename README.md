@@ -1,21 +1,32 @@
 # tk.llmbda
 
 Proto skill-composition framework for LLM pipelines.
-Define deterministic and LLM-powered steps, chain them into skills,
-compose skills into pipelines.
+Define deterministic and LLM-powered steps, chain them into skills.
 
 ```python
 from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill
 
 def greet(ctx: StepContext) -> StepResult:
     name = ctx.entry.get("name", "world")
-    return StepResult(value=f"hello, {name}", terminal=True)
+    return StepResult(value=f"hello, {name}")
 
-skill = Skill(
-    name="greeter",
-    steps=[Step("greet", greet)],
-)
+skill = Skill(name="greeter", steps=[Step("greet", greet)])
 
-result = run_skill(skill, {"name": "\u03bb"})
-# {"value": "hello, \u03bb", "metadata": {"skill": "greeter", "resolved_by": "greet"}}
+result = run_skill(skill, {"name": "\u03bb"}, caller=lambda **_: None)
+# SkillResult(skill="greeter", resolved_by="greet", value="hello, \u03bb", ...)
+```
+
+`caller` is required. Skills without LLM steps pass a noop; real skills pass
+an OpenAI-compatible callable.
+
+`StepResult.terminal` defaults to `True`. Return `terminal=False` to fall through
+to the next step. The last step is implicitly terminal.
+
+`SkillResult.trace` is an ordered `{step_name: StepResult}` of every step that ran.
+For live observation or early exit, iterate with `iter_skill` instead:
+
+```python
+for name, step_result in iter_skill(skill, entry, caller):
+    if step_result.value is not None:
+        break
 ```
