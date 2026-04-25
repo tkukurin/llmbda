@@ -199,6 +199,9 @@ def parse_topic(ctx: StepContext) -> StepResult:
 # finding against the raw text. If a regex step said "no weekday" but the text
 # says "tomorrow", the verifier owns that resolution — and it can also disagree
 # with a regex step that over-matched.
+#
+# Note: `ctx.caller` is pre-bound to this step's `system_prompt` (`VERIFY_PROMPT`
+# below) by the runtime. The body passes user turns only.
 
 # %%
 VERIFY_PROMPT = """\
@@ -246,10 +249,7 @@ def llm_verify_and_fill(ctx: StepContext) -> StepResult:
     }
     try:
         raw = ctx.caller(
-            messages=[
-                {"role": "system", "content": ctx.step.system_prompt},
-                {"role": "user", "content": json.dumps(payload, indent=2)},
-            ],
+            messages=[{"role": "user", "content": json.dumps(payload, indent=2)}],
         )
         parsed = json.loads(strip_fences(raw))
         return StepResult(

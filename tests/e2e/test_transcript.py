@@ -83,10 +83,7 @@ def llm_extract_action(ctx: StepContext) -> StepResult:
 
     try:
         raw_response = ctx.caller(
-            messages=[
-                {"role": "system", "content": ctx.step.system_prompt},
-                {"role": "user", "content": user_msg},
-            ]
+            messages=[{"role": "user", "content": user_msg}],
         )
         print(f"  -> LLM Raw Response: {raw_response}")
         parsed = json.loads(strip_fences(raw_response))
@@ -113,8 +110,6 @@ extract_action_item = Skill(
         Step("llm_extract_action", llm_extract_action, system_prompt=LLM_SYSTEM_PROMPT),
     ],
 )
-
-_LLM_STEP = extract_action_item.steps[-1]  # for direct-call unit tests below
 
 
 TEST_CASES = [
@@ -171,7 +166,6 @@ def test_llm_extract_action_parses():
     ctx = StepContext(
         entry={"transcript": "Bob, email the client tomorrow."},
         caller=fake,
-        step=_LLM_STEP,
     )
     result = llm_extract_action(ctx)
     assert result.value == {"task": "email the client", "owner": "Bob"}
@@ -181,9 +175,7 @@ def test_llm_extract_action_strips_fences():
     def fake(**_kw):
         return '```json\n{"task": "review PR", "owner": "Carol"}\n```'
 
-    ctx = StepContext(
-        entry={"transcript": "Carol, PR review please."}, caller=fake, step=_LLM_STEP,
-    )
+    ctx = StepContext(entry={"transcript": "Carol, PR review please."}, caller=fake)
     result = llm_extract_action(ctx)
     assert result.value == {"task": "review PR", "owner": "Carol"}
 
@@ -192,9 +184,7 @@ def test_llm_extract_action_null_when_no_task():
     def fake(**_kw):
         return '{"task": null, "owner": null}'
 
-    ctx = StepContext(
-        entry={"transcript": "Nice catching up."}, caller=fake, step=_LLM_STEP,
-    )
+    ctx = StepContext(entry={"transcript": "Nice catching up."}, caller=fake)
     result = llm_extract_action(ctx)
     assert result.value is None
 
@@ -203,7 +193,7 @@ def test_llm_extract_action_parse_error():
     def fake(**_kw):
         return "not JSON"
 
-    ctx = StepContext(entry={"transcript": "..."}, caller=fake, step=_LLM_STEP)
+    ctx = StepContext(entry={"transcript": "..."}, caller=fake)
     result = llm_extract_action(ctx)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"

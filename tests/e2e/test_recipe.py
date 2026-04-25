@@ -90,10 +90,7 @@ def llm_diagnose(ctx: StepContext) -> StepResult:
 
     try:
         raw_response = ctx.caller(
-            messages=[
-                {"role": "system", "content": ctx.step.system_prompt},
-                {"role": "user", "content": user_msg},
-            ]
+            messages=[{"role": "user", "content": user_msg}],
         )
         print(f"  -> LLM Raw Response: {raw_response}")
         parsed = json.loads(strip_fences(raw_response))
@@ -121,7 +118,6 @@ extract_cook_time = Skill(
     ],
 )
 
-_LLM_STEP = extract_cook_time.steps[-1]  # for direct-call unit tests below
 
 
 TEST_CASES = [
@@ -193,7 +189,7 @@ def test_llm_diagnose_parses_json():
     def fake(**_kw):
         return '{"value": 30, "diagnosis": "half an hour = 30 min"}'
 
-    ctx = StepContext(entry={"text": "half an hour"}, caller=fake, step=_LLM_STEP)
+    ctx = StepContext(entry={"text": "half an hour"}, caller=fake)
     result = llm_diagnose(ctx)
     assert result.value == 30
     assert result.metadata["diagnosis"] == "half an hour = 30 min"
@@ -203,9 +199,7 @@ def test_llm_diagnose_strips_fences():
     def fake(**_kw):
         return '```json\n{"value": 15, "diagnosis": "quarter hour"}\n```'
 
-    ctx = StepContext(
-        entry={"text": "a quarter of an hour"}, caller=fake, step=_LLM_STEP,
-    )
+    ctx = StepContext(entry={"text": "a quarter of an hour"}, caller=fake)
     result = llm_diagnose(ctx)
     assert result.value == 15
 
@@ -214,7 +208,7 @@ def test_llm_diagnose_null_value():
     def fake(**_kw):
         return '{"value": null, "diagnosis": "no time mentioned"}'
 
-    ctx = StepContext(entry={"text": "cook until bubbly"}, caller=fake, step=_LLM_STEP)
+    ctx = StepContext(entry={"text": "cook until bubbly"}, caller=fake)
     result = llm_diagnose(ctx)
     assert result.value is None
     assert result.metadata["diagnosis"] == "no time mentioned"
@@ -224,7 +218,7 @@ def test_llm_diagnose_parse_error():
     def fake(**_kw):
         return "not JSON at all"
 
-    ctx = StepContext(entry={"text": "..."}, caller=fake, step=_LLM_STEP)
+    ctx = StepContext(entry={"text": "..."}, caller=fake)
     result = llm_diagnose(ctx)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
