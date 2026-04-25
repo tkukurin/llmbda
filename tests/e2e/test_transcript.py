@@ -24,7 +24,7 @@ def parse_explicit_todo(ctx: StepContext) -> StepResult:
         )
     print("  -> Failed: No explicit TODO tag found.")
     return StepResult(
-        value=None, metadata={"reason": "no_explicit_todo"}, terminal=False
+        value=None, metadata={"reason": "no_explicit_todo"}, resolved=False
     )
 
 
@@ -123,7 +123,7 @@ def test_parse_explicit_todo_found():
     )
     result = parse_explicit_todo(ctx)
     assert result.value == {"task": "ship the release", "owner": "Alice"}
-    assert result.terminal is True
+    assert result.resolved is True
     assert result.metadata["reason"] == "explicit_todo_match"
 
 
@@ -134,7 +134,7 @@ def test_parse_explicit_todo_missing():
     )
     result = parse_explicit_todo(ctx)
     assert result.value is None
-    assert result.terminal is False
+    assert result.resolved is False
     assert result.metadata["reason"] == "no_explicit_todo"
 
 

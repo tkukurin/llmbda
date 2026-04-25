@@ -31,7 +31,7 @@ def counting_step(ctx: StepContext) -> StepResult:
     return StepResult(
         value=len(ctx.prior),
         metadata={"seen": list(ctx.prior.keys())},
-        terminal=False,
+        resolved=False,
     )
 
 
@@ -53,8 +53,8 @@ def test_single_step():
     assert result.trace["echo"].value == {"x": 1}
 
 
-def test_terminal_short_circuits():
-    def _terminal(_ctx):
+def test_resolved_short_circuits():
+    def _resolver(_ctx):
         return StepResult(value="stopped")
 
     def _unreachable(_ctx):
@@ -63,15 +63,15 @@ def test_terminal_short_circuits():
 
     skill = Skill(
         name="short",
-        steps=[Step("terminal", _terminal), Step("unreachable", _unreachable)],
+        steps=[Step("resolver", _resolver), Step("unreachable", _unreachable)],
     )
     result = run_skill(skill, {}, _noop)
     assert result.value == "stopped"
-    assert result.resolved_by == "terminal"
-    assert list(result.trace) == ["terminal"]
+    assert result.resolved_by == "resolver"
+    assert list(result.trace) == ["resolver"]
 
 
-def test_implicit_terminal_on_last_step():
+def test_implicit_resolved_on_last_step():
     skill = Skill(
         name="chain",
         steps=[
@@ -88,7 +88,7 @@ def test_implicit_terminal_on_last_step():
 
 def test_prior_accumulates():
     def deposit(_ctx):
-        return StepResult(value="first", metadata={"order": 1}, terminal=False)
+        return StepResult(value="first", metadata={"order": 1}, resolved=False)
 
     def check(ctx):
         prior_val = ctx.prior["deposit"].value
@@ -153,7 +153,7 @@ def test_iter_yields_each_step_in_order():
     assert [r.value for _, r in yielded] == [0, 1, 2]
 
 
-def test_iter_stops_after_terminal():
+def test_iter_stops_after_resolved():
     def _stop(_ctx):
         return StepResult(value="done")
 
@@ -242,7 +242,7 @@ def test_iter_skill_propagates_and_preserves_prior_yields():
     seen: list[str] = []
 
     def ok(_ctx):
-        return StepResult(value="ok", terminal=False)
+        return StepResult(value="ok", resolved=False)
 
     def boom(_ctx):
         msg = "step exploded"

@@ -19,14 +19,15 @@ result = run_skill(skill, {"name": "\u03bb"}, caller=lambda **_: None)
 `caller` is required. Skills without LLM steps pass a noop; real skills pass
 an OpenAI-compatible callable.
 
-`StepResult.terminal` defaults to `True`. Return `terminal=False` to fall through
-to the next step. The last step is implicitly terminal.
+`StepResult.resolved` defaults to `True`. Return `resolved=False` to fall through
+to the next step. The last step is always treated as resolved, so the skill is
+guaranteed to return something.
 
 `SkillResult.trace` is an ordered `{step_name: StepResult}` of every step that ran.
 For live observation or early exit, iterate with `iter_skill` instead:
 
 ```python
 for name, step_result in iter_skill(skill, entry, caller):
-    if step_result.value is not None:
+    if step_result.resolved:
         break
 ```

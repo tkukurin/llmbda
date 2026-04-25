@@ -23,7 +23,7 @@ def parse_minutes(ctx: StepContext) -> StepResult:
         return StepResult(value=mins, metadata={"reason": "matched_minutes"})
     print("  -> Failed: No minute regex match.")
     return StepResult(
-        value=None, metadata={"reason": "no_minute_match"}, terminal=False
+        value=None, metadata={"reason": "no_minute_match"}, resolved=False
     )
 
 
@@ -37,7 +37,7 @@ def parse_hours(ctx: StepContext) -> StepResult:
         print(f"  -> Success: Found hours, converted to {mins} minutes.")
         return StepResult(value=mins, metadata={"reason": "matched_hours"})
     print("  -> Failed: No hour regex match.")
-    return StepResult(value=None, metadata={"reason": "no_hour_match"}, terminal=False)
+    return StepResult(value=None, metadata={"reason": "no_hour_match"}, resolved=False)
 
 
 SYSTEM_PROMPT = """\
@@ -136,7 +136,7 @@ def test_parse_minutes_found():
     ctx = StepContext(entry={"text": "Bake for 30 mins."}, caller=_noop)
     result = parse_minutes(ctx)
     assert result.value == 30
-    assert result.terminal is True
+    assert result.resolved is True
     assert result.metadata["reason"] == "matched_minutes"
 
 
@@ -144,7 +144,7 @@ def test_parse_minutes_missing():
     ctx = StepContext(entry={"text": "Bake until golden."}, caller=_noop)
     result = parse_minutes(ctx)
     assert result.value is None
-    assert result.terminal is False
+    assert result.resolved is False
     assert result.metadata["reason"] == "no_minute_match"
 
 
@@ -152,21 +152,21 @@ def test_parse_hours_integer():
     ctx = StepContext(entry={"text": "Roast for 2 hours."}, caller=_noop)
     result = parse_hours(ctx)
     assert result.value == 120
-    assert result.terminal is True
+    assert result.resolved is True
 
 
 def test_parse_hours_decimal():
     ctx = StepContext(entry={"text": "Roast for 1.5 hours."}, caller=_noop)
     result = parse_hours(ctx)
     assert result.value == 90
-    assert result.terminal is True
+    assert result.resolved is True
 
 
 def test_parse_hours_missing():
     ctx = StepContext(entry={"text": "Bake for 5 minutes."}, caller=_noop)
     result = parse_hours(ctx)
     assert result.value is None
-    assert result.terminal is False
+    assert result.resolved is False
 
 
 def test_llm_diagnose_parses_json():

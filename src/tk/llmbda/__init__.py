@@ -14,10 +14,10 @@ Caller = Callable[..., Any]
 
 @dataclass
 class StepResult:
-    """What a single step produces. ``terminal=True`` short-circuits the skill."""
+    """What a single step produces. ``resolved=False`` falls to the next step."""
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    terminal: bool = True
+    resolved: bool = True
 
 @dataclass
 class StepContext:
@@ -59,7 +59,7 @@ def iter_skill(
         result = step.fn(ctx)
         ctx.prior[step.name] = result
         yield step.name, result
-        if result.terminal or i == last_idx:
+        if result.resolved or i == last_idx:
             return
 
 def run_skill(
