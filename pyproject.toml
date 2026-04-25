@@ -19,6 +19,9 @@ packages = ["src/tk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "e2e: marks tests as end-to-end requiring external APIs (deselect with '-m not e2e')"
+]
 
 [tool.ruff]
 target-version = "py311"
