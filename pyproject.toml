@@ -27,6 +27,7 @@ target-version = "py311"
 select = ["ALL"]
 ignore = [
   "D",       # pydocstyle
+  "E701",    # same line
   "COM812",  # trailing comma (conflicts with formatter)
   "ISC001",  # single-line implicit string concat
   "T20",     # allow print
