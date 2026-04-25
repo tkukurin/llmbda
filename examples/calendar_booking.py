@@ -247,7 +247,7 @@ def llm_verify_and_fill(ctx: StepContext) -> StepResult:
     try:
         raw = ctx.caller(
             messages=[
-                {"role": "system", "content": VERIFY_PROMPT},
+                {"role": "system", "content": ctx.step.system_prompt},
                 {"role": "user", "content": json.dumps(payload, indent=2)},
             ],
         )
