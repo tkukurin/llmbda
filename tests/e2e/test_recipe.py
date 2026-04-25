@@ -1,16 +1,15 @@
 """End-to-end multi-step pipeline test for llmbda."""
 
 import json
-import os
 import re
-import urllib.request
-from typing import Any
 
 import pytest
 
-from tk.llmbda import Skill, StepContext, StepResult, run_skill
+from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill, strip_fences
 
-pytestmark = pytest.mark.e2e
+
+def _noop(**_kw: object) -> None:
+    return None
 
 
 def parse_minutes(ctx: StepContext) -> StepResult:
@@ -21,9 +20,7 @@ def parse_minutes(ctx: StepContext) -> StepResult:
     if match:
         mins = int(match.group(1))
         print(f"  -> Success: Found {mins} minutes.")
-        return StepResult(
-            value=mins, metadata={"reason": "matched_minutes"}, terminal=True
-        )
+        return StepResult(value=mins, metadata={"reason": "matched_minutes"})
     print("  -> Failed: No minute regex match.")
     return StepResult(
         value=None, metadata={"reason": "no_minute_match"}, terminal=False
@@ -38,9 +35,7 @@ def parse_hours(ctx: StepContext) -> StepResult:
     if match:
         mins = int(float(match.group(1)) * 60)
         print(f"  -> Success: Found hours, converted to {mins} minutes.")
-        return StepResult(
-            value=mins, metadata={"reason": "matched_hours"}, terminal=True
-        )
+        return StepResult(value=mins, metadata={"reason": "matched_hours"})
     print("  -> Failed: No hour regex match.")
     return StepResult(value=None, metadata={"reason": "no_hour_match"}, terminal=False)
 
@@ -68,12 +63,6 @@ Rules:
 def llm_diagnose(ctx: StepContext) -> StepResult:
     """Use an LLM to semantically parse the time or diagnose the failure."""
     print("[Trace] Running Step 3: llm_diagnose (Fallback Triggered)")
-    if ctx.caller is None:
-        print("  -> Failed: No caller provided.")
-        return StepResult(
-            value=None, metadata={"reason": "no_caller_available"}, terminal=True
-        )
-
     prior_meta = {k: v.metadata for k, v in ctx.prior.items()}
     user_msg = json.dumps(
         {"text": ctx.entry.get("text", ""), "prior_steps": prior_meta}, indent=2
@@ -88,58 +77,31 @@ def llm_diagnose(ctx: StepContext) -> StepResult:
             ]
         )
         print(f"  -> LLM Raw Response: {raw_response}")
-        cleaned = re.sub(
-            r"^```(?:json)?\s*\n?(.*?)\n?\s*```$",
-            r"\1",
-            raw_response.strip(),
-            flags=re.DOTALL,
-        )
-        parsed = json.loads(cleaned)
-
+        parsed = json.loads(strip_fences(raw_response))
         return StepResult(
             value=parsed.get("value"),
             metadata={
                 "diagnosis": parsed.get("diagnosis", ""),
                 "llm_raw": raw_response,
             },
-            terminal=True,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  -- step must survive any caller/parse failure
         print(f"  -> LLM Error: {exc}")
         return StepResult(
             value=None,
             metadata={"reason": "llm_parse_error", "error": str(exc)},
-            terminal=True,
         )
 
 
 extract_cook_time = Skill(
     name="extract_cook_time",
     system_prompt=SYSTEM_PROMPT,
-    steps=[parse_minutes, parse_hours, llm_diagnose],
+    steps=[
+        Step("parse_minutes", parse_minutes),
+        Step("parse_hours", parse_hours),
+        Step("llm_diagnose", llm_diagnose),
+    ],
 )
-
-
-def openai_caller(**kwargs: Any) -> str:
-    """Minimal synchronous caller for OpenAI's Chat API."""
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is required.")
-
-    payload = json.dumps({"model": "gpt-4o-mini", "temperature": 0.0, **kwargs}).encode(
-        "utf-8"
-    )
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
-    with urllib.request.urlopen(req) as response:
-        res = json.loads(response.read().decode("utf-8"))
-        return res["choices"][0]["message"]["content"]
 
 
 TEST_CASES = [
@@ -170,16 +132,95 @@ TEST_CASES = [
 ]
 
 
+def test_parse_minutes_found():
+    ctx = StepContext(entry={"text": "Bake for 30 mins."}, caller=_noop)
+    result = parse_minutes(ctx)
+    assert result.value == 30
+    assert result.terminal is True
+    assert result.metadata["reason"] == "matched_minutes"
+
+
+def test_parse_minutes_missing():
+    ctx = StepContext(entry={"text": "Bake until golden."}, caller=_noop)
+    result = parse_minutes(ctx)
+    assert result.value is None
+    assert result.terminal is False
+    assert result.metadata["reason"] == "no_minute_match"
+
+
+def test_parse_hours_integer():
+    ctx = StepContext(entry={"text": "Roast for 2 hours."}, caller=_noop)
+    result = parse_hours(ctx)
+    assert result.value == 120
+    assert result.terminal is True
+
+
+def test_parse_hours_decimal():
+    ctx = StepContext(entry={"text": "Roast for 1.5 hours."}, caller=_noop)
+    result = parse_hours(ctx)
+    assert result.value == 90
+    assert result.terminal is True
+
+
+def test_parse_hours_missing():
+    ctx = StepContext(entry={"text": "Bake for 5 minutes."}, caller=_noop)
+    result = parse_hours(ctx)
+    assert result.value is None
+    assert result.terminal is False
+
+
+def test_llm_diagnose_parses_json():
+    def fake(**_kw):
+        return '{"value": 30, "diagnosis": "half an hour = 30 min"}'
+
+    ctx = StepContext(entry={"text": "half an hour"}, caller=fake)
+    result = llm_diagnose(ctx)
+    assert result.value == 30
+    assert result.metadata["diagnosis"] == "half an hour = 30 min"
+
+
+def test_llm_diagnose_strips_fences():
+    def fake(**_kw):
+        return '```json\n{"value": 15, "diagnosis": "quarter hour"}\n```'
+
+    ctx = StepContext(entry={"text": "a quarter of an hour"}, caller=fake)
+    result = llm_diagnose(ctx)
+    assert result.value == 15
+
+
+def test_llm_diagnose_null_value():
+    def fake(**_kw):
+        return '{"value": null, "diagnosis": "no time mentioned"}'
+
+    ctx = StepContext(entry={"text": "cook until bubbly"}, caller=fake)
+    result = llm_diagnose(ctx)
+    assert result.value is None
+    assert result.metadata["diagnosis"] == "no time mentioned"
+
+
+def test_llm_diagnose_parse_error():
+    def fake(**_kw):
+        return "not JSON at all"
+
+    ctx = StepContext(entry={"text": "..."}, caller=fake)
+    result = llm_diagnose(ctx)
+    assert result.value is None
+    assert result.metadata["reason"] == "llm_parse_error"
+
+
+@pytest.mark.e2e
 @pytest.mark.parametrize("tc", TEST_CASES, ids=lambda x: x["id"])
-def test_recipe_pipeline(tc):
+def test_recipe_pipeline(tc, openai_caller):
     print(f"\nTesting Case: {tc['id']}")
 
-    caller = openai_caller
-
-    result = run_skill(extract_cook_time, {"text": tc["text"]}, caller=caller)
-    print(
-        f"\n[Final Output]\n{json.dumps({'value': result.value, 'metadata': result.metadata}, indent=2)}"
-    )
+    result = run_skill(extract_cook_time, {"text": tc["text"]}, caller=openai_caller)
+    output = {
+        "skill": result.skill,
+        "resolved_by": result.resolved_by,
+        "value": result.value,
+        "metadata": result.metadata,
+    }
+    print(f"\n[Final Output]\n{json.dumps(output, indent=2)}")
 
     assert result.value == tc["expected_val"]
-    assert result.metadata["resolved_by"] == tc["expected_resolver"]
+    assert result.resolved_by == tc["expected_resolver"]
