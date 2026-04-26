@@ -6,7 +6,7 @@ steps into a skill; the runtime walks them in order until one resolves.
 ## Deterministic skill
 
 ```python
-from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill
+from tk.llmbda import Skill, Step, StepContext, StepResult, lm, run_skill
 
 def greet(ctx: StepContext) -> StepResult:
     name = ctx.entry.get("name", "world")
