@@ -1,3 +1,5 @@
+"""End-to-end multi-step pipeline test for llmbda — transcript action items."""
+
 from __future__ import annotations
 
 import json
@@ -5,16 +7,15 @@ import re
 
 import pytest
 
-from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill, strip_fences
-
-
-def _noop(**_kw: object) -> None:
-    return None
-
-
-PARSE_EXPLICIT_TODO_PROMPT = (
-    "Find an explicitly tagged action item of the form "
-    "'TODO: <task> @<owner>' and extract the task and owner."
+from tk.llmbda import (
+    LMCaller,
+    Skill,
+    Step,
+    StepContext,
+    StepResult,
+    lm,
+    run_skill,
+    strip_fences,
 )
 
 LLM_SYSTEM_PROMPT = """\
@@ -22,7 +23,7 @@ You are an AI meeting assistant.
 You receive a JSON object with:
 - "transcript": A snippet of dialogue from a meeting.
 - "prior_steps": The earlier parsers that ran, each with its own intent
-  (system_prompt) and outcome (metadata).
+  (description), value, and metadata.
 
 Your task: Extract the single most important action item
 and its owner from the transcript.
@@ -41,7 +42,7 @@ Rules:
 
 
 def parse_explicit_todo(ctx: StepContext) -> StepResult:
-    """Extract an explicitly marked TODO and owner."""
+    """Find an explicitly tagged action item of the form 'TODO: <task> @<owner>'."""
     text = ctx.entry.get("transcript", "")
     print(f"\n[Trace] Running parse_explicit_todo on '{text}'")
     match = re.search(r"TODO:\s*(.+?)\s+@(\w+)", text, re.IGNORECASE)
@@ -63,7 +64,8 @@ def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
     return [
         {
             "name": s.name,
-            "system_prompt": s.system_prompt,
+            "description": s.description,
+            "value": ctx.prior[s.name].value,
             "metadata": ctx.prior[s.name].metadata,
         }
         for s in ctx.steps
@@ -71,8 +73,8 @@ def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
     ]
 
 
-def llm_extract_action(ctx: StepContext) -> StepResult:
-    """Use an LLM to semantically infer tasks from conversational transcripts."""
+def _llm_extract_action(ctx: StepContext, call: LMCaller) -> StepResult:
+    """Infer the most important action item and owner from a transcript."""
     print("[Trace] Running llm_extract_action (Fallback Triggered)")
     user_msg = json.dumps(
         {
@@ -84,7 +86,7 @@ def llm_extract_action(ctx: StepContext) -> StepResult:
     print(f"  -> Prompting LLM with prior context:\n{user_msg}")
 
     try:
-        raw_response = ctx.caller(
+        raw_response = call(
             messages=[{"role": "user", "content": user_msg}],
         )
         print(f"  -> LLM Raw Response: {raw_response}")
@@ -101,29 +103,35 @@ def llm_extract_action(ctx: StepContext) -> StepResult:
         )
 
 
-extract_action_item = Skill(
-    name="extract_action_item",
-    steps=[
-        Step(
-            "parse_explicit_todo",
-            parse_explicit_todo,
-            system_prompt=PARSE_EXPLICIT_TODO_PROMPT,
-        ),
-        Step("llm_extract_action", llm_extract_action, system_prompt=LLM_SYSTEM_PROMPT),
-    ],
-)
+def _make_skill(caller: LMCaller) -> Skill:
+    return Skill(
+        name="extract_action_item",
+        steps=[
+            Step("parse_explicit_todo", parse_explicit_todo),
+            Step(
+                "llm_extract_action",
+                lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_extract_action),
+            ),
+        ],
+    )
 
 
 TEST_CASES = [
     {
         "id": "T1_explicit_todo",
-        "transcript": "Okay, so before we end. TODO: update the database schema @Sarah.",  # noqa: E501
+        "transcript": (
+            "Okay, so before we end."
+            " TODO: update the database schema @Sarah."
+        ),
         "expected_val": {"task": "update the database schema", "owner": "Sarah"},
         "expected_resolver": "parse_explicit_todo",
     },
     {
         "id": "T2_conversational_task",
-        "transcript": "Alright, Bob, can you make sure to email the client by tomorrow morning?",  # noqa: E501
+        "transcript": (
+            "Alright, Bob, can you make sure to email"
+            " the client by tomorrow morning?"
+        ),
         "expected_val": {
             "task": "email the client by tomorrow morning",
             "owner": "Bob",
@@ -132,7 +140,10 @@ TEST_CASES = [
     },
     {
         "id": "T3_no_action_item",
-        "transcript": "Great meeting everyone, I think we made a lot of progress today. See you all next week.",  # noqa: E501
+        "transcript": (
+            "Great meeting everyone, I think we made a lot"
+            " of progress today. See you all next week."
+        ),
         "expected_val": None,
         "expected_resolver": "llm_extract_action",
     },
@@ -142,7 +153,6 @@ TEST_CASES = [
 def test_parse_explicit_todo_found():
     ctx = StepContext(
         entry={"transcript": "Before we end. TODO: ship the release @Alice."},
-        caller=_noop,
     )
     result = parse_explicit_todo(ctx)
     assert result.value == {"task": "ship the release", "owner": "Alice"}
@@ -153,7 +163,6 @@ def test_parse_explicit_todo_found():
 def test_parse_explicit_todo_missing():
     ctx = StepContext(
         entry={"transcript": "Great work team, see you next week."},
-        caller=_noop,
     )
     result = parse_explicit_todo(ctx)
     assert result.value is None
@@ -162,63 +171,60 @@ def test_parse_explicit_todo_missing():
 
 
 def test_llm_extract_action_parses():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return '{"task": "email the client", "owner": "Bob"}'
 
-    ctx = StepContext(
-        entry={"transcript": "Bob, email the client tomorrow."},
-        caller=fake,
-    )
-    result = llm_extract_action(ctx)
+    ctx = StepContext(entry={"transcript": "Bob, email the client tomorrow."})
+    result = _llm_extract_action(ctx, fake)
     assert result.value == {"task": "email the client", "owner": "Bob"}
 
 
 def test_llm_extract_action_strips_fences():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return '```json\n{"task": "review PR", "owner": "Carol"}\n```'
 
-    ctx = StepContext(entry={"transcript": "Carol, PR review please."}, caller=fake)
-    result = llm_extract_action(ctx)
+    ctx = StepContext(entry={"transcript": "Carol, PR review please."})
+    result = _llm_extract_action(ctx, fake)
     assert result.value == {"task": "review PR", "owner": "Carol"}
 
 
 def test_llm_extract_action_null_when_no_task():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return '{"task": null, "owner": null}'
 
-    ctx = StepContext(entry={"transcript": "Nice catching up."}, caller=fake)
-    result = llm_extract_action(ctx)
+    ctx = StepContext(entry={"transcript": "Nice catching up."})
+    result = _llm_extract_action(ctx, fake)
     assert result.value is None
 
 
 def test_llm_extract_action_parse_error():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return "not JSON"
 
-    ctx = StepContext(entry={"transcript": "..."}, caller=fake)
-    result = llm_extract_action(ctx)
+    ctx = StepContext(entry={"transcript": "..."})
+    result = _llm_extract_action(ctx, fake)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
 
 
-def test_prior_steps_payload_includes_system_prompts():
-    """llm_extract_action receives earlier step intents, not just their metadata."""
+def test_prior_steps_payload_and_system_prompt():
+    """llm_extract_action receives prior step descriptions and its own system prompt."""
     captured: dict[str, str] = {}
 
-    def fake(**kwargs):
-        captured["user"] = kwargs["messages"][1]["content"]
-        captured["system"] = kwargs["messages"][0]["content"]
+    def spy(*, messages: list[dict[str, str]], **_kw: object) -> str:
+        captured["system"] = messages[0]["content"]
+        captured["user"] = messages[1]["content"]
         return '{"task": null, "owner": null}'
 
-    run_skill(
-        extract_action_item,
-        {"transcript": "Great meeting everyone."},
-        caller=fake,
-    )
+    skill = _make_skill(spy)
+    run_skill(skill, {"transcript": "Great meeting everyone."})
     payload = json.loads(captured["user"])
     names = [s["name"] for s in payload["prior_steps"]]
     assert names == ["parse_explicit_todo"]
-    assert payload["prior_steps"][0]["system_prompt"] == PARSE_EXPLICIT_TODO_PROMPT
+    assert payload["prior_steps"][0]["description"] == (
+        "Find an explicitly tagged action item of the form 'TODO: <task> @<owner>'."
+    )
+    assert payload["prior_steps"][0]["value"] is None
     assert captured["system"] == LLM_SYSTEM_PROMPT
 
 
@@ -227,11 +233,8 @@ def test_prior_steps_payload_includes_system_prompts():
 def test_transcript_pipeline(tc, openai_caller):
     print(f"\nTesting Case: {tc['id']}")
 
-    result = run_skill(
-        extract_action_item,
-        {"transcript": tc["transcript"]},
-        caller=openai_caller,
-    )
+    skill = _make_skill(openai_caller)
+    result = run_skill(skill, {"transcript": tc["transcript"]})
     output = {
         "skill": result.skill,
         "resolved_by": result.resolved_by,
