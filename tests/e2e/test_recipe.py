@@ -24,7 +24,7 @@ You are a culinary data extractor.
 You receive a JSON object with:
 - "text": A messy snippet from a recipe blog.
 - "prior_steps": The earlier parsers that ran, each with its own intent
-  (system_prompt) and outcome (metadata).
+  (system_prompt), value, and metadata.
 
 Your task: Extract the cooking time in minutes, or explain why it's missing.
 
@@ -69,11 +69,12 @@ def parse_hours(ctx: StepContext) -> StepResult:
 
 
 def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
-    """Serialise prior steps with their intent and outcome for LLM context."""
+    """Serialise prior steps with their intent, value, and metadata."""
     return [
         {
             "name": s.name,
             "system_prompt": s.system_prompt,
+            "value": ctx.prior[s.name].value,
             "metadata": ctx.prior[s.name].metadata,
         }
         for s in ctx.steps
@@ -226,7 +227,7 @@ def test_llm_diagnose_parse_error():
 
 
 def test_prior_steps_payload_includes_system_prompts():
-    """llm_diagnose receives earlier steps' intents, not just their metadata."""
+    """llm_diagnose receives earlier step intents, values, and metadata."""
     captured: dict[str, str] = {}
 
     def fake(**kwargs):
@@ -240,6 +241,10 @@ def test_prior_steps_payload_includes_system_prompts():
     assert names == ["parse_minutes", "parse_hours"]
     assert payload["prior_steps"][0]["system_prompt"] == PARSE_MINUTES_PROMPT
     assert payload["prior_steps"][1]["system_prompt"] == PARSE_HOURS_PROMPT
+    assert payload["prior_steps"][0]["value"] is None
+    assert payload["prior_steps"][1]["value"] is None
+    assert payload["prior_steps"][0]["metadata"] == {"reason": "no_minute_match"}
+    assert payload["prior_steps"][1]["metadata"] == {"reason": "no_hour_match"}
     assert captured["system"] == LLM_SYSTEM_PROMPT
 
 

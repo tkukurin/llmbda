@@ -17,8 +17,8 @@
 #    `Booking` dict or a structured diagnosis.
 #
 # Intermediate steps return `resolved=False` so the runtime keeps walking the
-# chain; they stash what they found in `metadata` rather than `value`. The
-# verifier is the terminal step and is what `SkillResult.resolved_by` will
+# chain; they put extracted data in `value` and keep `metadata` for reasons.
+# The verifier is the terminal step and is what `SkillResult.resolved_by` will
 # point to.
 #
 # The notebook runs end-to-end without an API key — a scripted fake caller
@@ -36,9 +36,9 @@ from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill, strip_fen
 # %% [markdown]
 # ## Step 1 — weekday
 #
-# A thin regex over the seven weekday names. We stash the match (or its
-# absence) in `metadata` and always fall through. The `system_prompt`
-# captures the step's intent so the verifier can read it back.
+# A thin regex over the seven weekday names. We return the match as `value`
+# and always fall through. The `system_prompt` captures the step's intent so
+# the verifier can read it back.
 
 # %%
 WEEKDAY_PROMPT = (
@@ -52,31 +52,31 @@ WEEKDAYS = (
 )
 
 def parse_weekday(ctx: StepContext) -> StepResult:
-    """Regex-find a weekday in `ctx.entry['text']`, stash in metadata."""
+    """Regex-find a weekday in `ctx.entry['text']`."""
     text = ctx.entry["text"].lower()
     for day in WEEKDAYS:
         if re.search(rf"\b{day}\b", text):
             return StepResult(
-                value=None,
-                metadata={"weekday": day.capitalize(), "reason": "matched"},
+                value=day.capitalize(),
+                metadata={"reason": "matched"},
                 resolved=False,
             )
     return StepResult(
         value=None,
-        metadata={"weekday": None, "reason": "no_weekday_in_text"},
+        metadata={"reason": "no_weekday_in_text"},
         resolved=False,
     )
 
 # %%
 parse_weekday(
     StepContext(entry={"text": "meet Tuesday at 3pm"}, caller=lambda **_: None),
-).metadata
+).value
 
 # %% [markdown]
 # ## Step 2 — time
 #
 # Handles `"3pm"`, `"15:00"`, and ranges like `"9-10am"` (in which case we
-# stash both start and end so duration can be inferred downstream).
+# return both start and end so duration can be inferred downstream).
 
 # %%
 TIME_PROMPT = (
@@ -100,32 +100,28 @@ def _fmt(h: int, m: int, ampm: str | None) -> str:
     return f"{h:02d}:{m:02d}"
 
 def parse_time(ctx: StepContext) -> StepResult:
-    """Regex-find a clock time or time range; stash start (and end) in metadata."""
+    """Regex-find a clock time or time range."""
     text = ctx.entry["text"]
     m = _TIME_RE.search(text)
     if not m:
         return StepResult(
             value=None,
-            metadata={"start": None, "end": None, "reason": "no_time_found"},
+            metadata={"reason": "no_time_found"},
             resolved=False,
         )
     h1, min1, h2, min2, ampm = m.groups()
     start = _fmt(int(h1), int(min1 or 0), ampm)
     end = _fmt(int(h2), int(min2 or 0), ampm) if h2 else None
     return StepResult(
-        value=None,
-        metadata={
-            "start": start,
-            "end": end,
-            "reason": "matched_range" if end else "matched_single",
-        },
+        value={"start": start, "end": end},
+        metadata={"reason": "matched_range" if end else "matched_single"},
         resolved=False,
     )
 
 # %%
 for text in ("3pm", "meeting 9-10am", "at 15:00", "no time here"):
     r = parse_time(StepContext(entry={"text": text}, caller=lambda **_: None))
-    print(f"{text!r:30} -> {r.metadata}")
+    print(f"{text!r:30} -> value={r.value} meta={r.metadata}")
 
 # %% [markdown]
 # ## Step 3 — duration
@@ -147,14 +143,14 @@ def parse_duration(ctx: StepContext) -> StepResult:
     if not m:
         return StepResult(
             value=None,
-            metadata={"minutes": None, "reason": "no_duration"},
+            metadata={"reason": "no_duration"},
             resolved=False,
         )
     n, unit = float(m.group(1)), m.group(2).lower()
     minutes = int(n * 60) if unit.startswith(("hour", "hr")) else int(n)
     return StepResult(
-        value=None,
-        metadata={"minutes": minutes, "reason": "matched"},
+        value=minutes,
+        metadata={"reason": "matched"},
         resolved=False,
     )
 
@@ -176,12 +172,12 @@ def parse_topic(ctx: StepContext) -> StepResult:
     if not m:
         return StepResult(
             value=None,
-            metadata={"topic": None, "reason": "no_topic_marker"},
+            metadata={"reason": "no_topic_marker"},
             resolved=False,
         )
     return StepResult(
-        value=None,
-        metadata={"topic": m.group(1).strip(), "reason": "matched"},
+        value=m.group(1).strip(),
+        metadata={"reason": "matched"},
         resolved=False,
     )
 
@@ -193,7 +189,7 @@ def parse_topic(ctx: StepContext) -> StepResult:
 #
 # - the original `text`,
 # - for every prior step: its `name`, its `system_prompt` (what it was looking
-#   for), and its `metadata` (what it found, or why it didn't).
+#   for), its `value` (what it found), and its `metadata` (why).
 #
 # The model is asked to return a final `Booking`, *cross-checking* each prior
 # finding against the raw text. If a regex step said "no weekday" but the text
@@ -208,7 +204,7 @@ VERIFY_PROMPT = """\
 You are a calendar booking verifier.
 You receive a JSON object with:
 - "text": the original request.
-- "prior_steps": each earlier parser with {name, system_prompt, metadata}.
+- "prior_steps": each earlier parser with {name, system_prompt, value, metadata}.
 
 Your job is to produce a final booking by cross-checking the prior_steps
 against the raw text. You MUST:
@@ -235,6 +231,7 @@ def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
         {
             "name": s.name,
             "system_prompt": s.system_prompt,
+            "value": ctx.prior[s.name].value,
             "metadata": ctx.prior[s.name].metadata,
         }
         for s in ctx.steps
@@ -375,7 +372,7 @@ dump_verifier_payload("Meeting Friday 9-10am re: hiring.")
 
 # %% [markdown]
 # Notice how the verifier's payload says `parse_duration` looked for a
-# duration phrase and found none (`minutes: null`), yet the time parser
+# duration phrase and found none (`value: null`), yet the time parser
 # found a range (`9-10am`). That's exactly the inconsistency the verifier
 # is in a position to resolve — and the `notes` field shows it did.
 

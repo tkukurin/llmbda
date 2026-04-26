@@ -128,19 +128,34 @@ def run_skill(skill: Skill, entry: Any) -> SkillResult:
 def parse_weekday(ctx: StepContext) -> StepResult:
     """Find a weekday name (Mon-Sun) in the text."""
     text = ctx.entry["text"].lower()
-    days = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    days = (
+        "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+    )
     for d in days:
         if re.search(rf"\b{d}\b", text):
-            return StepResult(value=None, metadata={"weekday": d.capitalize()}, resolved=False)
-    return StepResult(value=None, metadata={"weekday": None}, resolved=False)
+            return StepResult(
+                value=d.capitalize(),
+                metadata={"reason": "matched_weekday"},
+                resolved=False,
+            )
+    return StepResult(value=None, metadata={"reason": "no_weekday"}, resolved=False)
 
 def parse_time(ctx: StepContext) -> StepResult:
     """Find a clock time like 3pm or 15:00."""
-    m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", ctx.entry["text"], re.IGNORECASE)
+    m = re.search(
+        r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+        ctx.entry["text"],
+        re.IGNORECASE,
+    )
     if not m:
-        return StepResult(value=None, metadata={"time": None}, resolved=False)
+        return StepResult(value=None, metadata={"reason": "no_time"}, resolved=False)
     h, mins, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3).lower()
-    return StepResult(value=None, metadata={"time": f"{h}:{mins:02d}{ampm}"}, resolved=False)
+    return StepResult(
+        value=f"{h}:{mins:02d}{ampm}",
+        metadata={"reason": "matched_time"},
+        resolved=False,
+    )
 
 # %% [markdown]
 # ## Model must exist before decoration
@@ -149,14 +164,19 @@ def parse_time(ctx: StepContext) -> StepResult:
 # The fake caller is defined first so `@lm(fake_caller, ...)` can capture it.
 
 # %%
-call_count = 0
+fake_responses = iter((
+    json.dumps({
+        "weekday": "Tuesday",
+        "time": "3:00pm",
+        "notes": "All confirmed.",
+    }),
+    "Meeting with Alice on Tuesday at 3pm.",
+))
 
 def fake_caller(*, messages: list[dict[str, str]], **_kwargs: Any) -> str:
-    global call_count
-    call_count += 1
-    if call_count == 1:
-        return json.dumps({"weekday": "Tuesday", "time": "3:00pm", "notes": "All confirmed."})
-    return "Meeting with Alice on Tuesday at 3pm."
+    if not messages:
+        return ""
+    return next(fake_responses)
 
 # %% [markdown]
 # ## LM steps — `@lm(model)` binds the model at decoration time
@@ -174,8 +194,13 @@ Return JSON: {"weekday": ..., "time": ..., "notes": "..."}"""
 @lm(fake_caller, system_prompt=VERIFY_PROMPT)
 def verify(ctx: StepContext, call: LMCaller) -> StepResult:
     """Cross-check parser outputs against the raw text."""
-    prior_summary = [  # system_prompt reachable via getattr(s.fn, "lm_system_prompt", "") if needed
-        {"name": s.name, "description": s.description, "metadata": ctx.prior[s.name].metadata}
+    prior_summary = [
+        {
+            "name": s.name,
+            "description": s.description,
+            "value": ctx.prior[s.name].value,
+            "metadata": ctx.prior[s.name].metadata,
+        }
         for s in ctx.steps if s.name in ctx.prior
     ]
     payload = json.dumps({"text": ctx.entry["text"], "prior": prior_summary}, indent=2)
@@ -248,7 +273,7 @@ for s in book_meeting.steps:
 print()
 print("trace:")
 for name, sr in result.trace.items():
-    print(f"  {name:16} resolved={sr.resolved}  meta={sr.metadata}")
+    print(f"  {name:16} resolved={sr.resolved}  value={sr.value!r}  meta={sr.metadata}")
 
 # %% [markdown]
 # ## Re-binding for testing

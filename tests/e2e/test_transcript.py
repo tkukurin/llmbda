@@ -22,7 +22,7 @@ You are an AI meeting assistant.
 You receive a JSON object with:
 - "transcript": A snippet of dialogue from a meeting.
 - "prior_steps": The earlier parsers that ran, each with its own intent
-  (system_prompt) and outcome (metadata).
+  (system_prompt), value, and metadata.
 
 Your task: Extract the single most important action item
 and its owner from the transcript.
@@ -64,6 +64,7 @@ def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
         {
             "name": s.name,
             "system_prompt": s.system_prompt,
+            "value": ctx.prior[s.name].value,
             "metadata": ctx.prior[s.name].metadata,
         }
         for s in ctx.steps
@@ -202,7 +203,7 @@ def test_llm_extract_action_parse_error():
 
 
 def test_prior_steps_payload_includes_system_prompts():
-    """llm_extract_action receives earlier step intents, not just their metadata."""
+    """llm_extract_action receives earlier step intents, values, and metadata."""
     captured: dict[str, str] = {}
 
     def fake(**kwargs):
@@ -219,6 +220,7 @@ def test_prior_steps_payload_includes_system_prompts():
     names = [s["name"] for s in payload["prior_steps"]]
     assert names == ["parse_explicit_todo"]
     assert payload["prior_steps"][0]["system_prompt"] == PARSE_EXPLICIT_TODO_PROMPT
+    assert payload["prior_steps"][0]["value"] is None
     assert captured["system"] == LLM_SYSTEM_PROMPT
 
 
