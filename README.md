@@ -3,6 +3,8 @@
 Skill composition for LLM pipelines. Chain deterministic and LLM-powered
 steps into a skill; the runtime walks them in order until one resolves.
 
+## Deterministic skill
+
 ```python
 from tk.llmbda import Skill, Step, StepContext, StepResult, lm, run_skill
 
@@ -10,35 +12,57 @@ def greet(ctx: StepContext) -> StepResult:
     name = ctx.entry.get("name", "world")
     return StepResult(value=f"hello, {name}")
 
-skill = Skill(
-    name="greeter",
-    steps=[Step("greet", greet)],
-)
-
+skill = Skill(name="greeter", steps=[Step("greet", greet)])
 result = run_skill(skill, {"name": "λ"})
 # SkillResult(skill="greeter", resolved_by="greet", value="hello, λ", ...)
 ```
 
-- **`@lm(model, system_prompt=...)`** — decorator that binds a model (and optional system prompt) to a step function at definition time. The decorated function receives `(ctx, call)` where `call` forwards to the model with the system prompt prepended. The model must exist before decoration.
-- **`Step.description`** — auto-populated from the function's docstring via `__post_init__`. Pass an explicit `description=` to override. Later steps can read prior step descriptions from `ctx.steps` for cross-checking context.
-- **`StepResult.value`** — the step's actual output: parsed data, extracted values, model responses, or `None` when nothing was found.
-- **`StepResult.metadata`** — auxiliary context about the step: reasons, diagnostics, raw provider output, parse errors, confidence, or other non-primary details.
-- **`StepResult.resolved`** — defaults to `True`; return `resolved=False` to fall through to the next step. Execution stops after the final step regardless, and the trace preserves the flag that step returned.
-- **`ctx.steps`, `ctx.prior`** — the plan and prior-step outcomes, for steps that cross-check or summarise earlier work. When serialising prior steps for an LLM, include both `value` and `metadata`.
-- **`iter_skill`** — same execution as `run_skill`, but yields `(step_name, result)` for live observation or early exit.
+## LLM skill
 
-## LLM steps
+Self-contained with a fake model so the snippet runs as-is:
 
 ```python
-from tk.llmbda import lm, StepContext, StepResult
+from tk.llmbda import Skill, Step, StepContext, StepResult, lm, run_skill
 
-@lm(my_model, system_prompt="Extract the date from the text.")
+def fake_model(*, messages, **_):
+    return "2025-01-15"  # pretend the LLM returned an ISO date
+
+@lm(fake_model, system_prompt="Extract a date. Return ISO format.")
 def extract_date(ctx: StepContext, call) -> StepResult:
-    """Extract a date from natural language text."""
+    """Extract a date from natural language."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
     return StepResult(value=raw)
+
+skill = Skill(name="dates", steps=[Step("extract_date", extract_date)])
+result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
+# SkillResult(skill="dates", resolved_by="extract_date", value="2025-01-15", ...)
 ```
 
-- The `call` argument is a bound caller that prepends the system prompt to `messages` before forwarding to the model.
-- Introspection: `extract_date.lm_system_prompt`, `extract_date.lm_model`.
-- Re-bind for testing via `__wrapped__`: `lm(fake)(extract_date.__wrapped__)`.
+## OpenAI adapter
+
+Any callable matching `LMCaller` (`(*, messages: list[dict], **kwargs) -> str`)
+works as the `@lm` model. Minimal adapter using the `openai` SDK:
+
+```python
+from openai import OpenAI
+client = OpenAI()
+
+def openai_caller(*, messages, **kwargs):
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini", messages=messages, **kwargs,
+    )
+    return resp.choices[0].message.content
+```
+
+Drop-in replacement for `fake_model` in the snippet above.
+
+## Concepts
+
+- **`@lm(model, system_prompt=...)`** — binds *model* (and optional system prompt) at decoration time. Decorated fn signature is `(ctx, call)`; `call` prepends `system_prompt` before forwarding to *model*.
+- **`Step.description`** — human-readable summary; falls back to the fn docstring via `__post_init__`. Separate from `@lm` system prompts; read those via `step.fn.lm_system_prompt`.
+- **`StepResult.value`** — the step's output: parsed data, extracted values, model responses, or `None`.
+- **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, parse errors, confidence.
+- **`StepResult.resolved`** — defaults to `True`; return `resolved=False` to fall through. Execution stops after the final step regardless.
+- **`ctx.steps`, `ctx.prior`** — the plan and prior-step outcomes. Serialise both `value` and `metadata` when passing to a later LLM step.
+- **`iter_skill`** — same execution as `run_skill` but yields `(name, result)` per step for live observation or early exit.
+- **Test re-binding** — `lm(fake)(my_step.__wrapped__)` re-decorates the original fn body with a different model.
