@@ -1,16 +1,20 @@
 # %% [markdown]
-# # Sketch: `Step` vs `LMStep` — caller binding semantics
+# # Sketch: decorator-as-HOF with `LMCaller` protocol
 #
-# The type distinction encodes what the **runtime does with the caller**:
+# One `Step` type. The `@lm` decorator is a genuine higher-order function
+# that wraps the step fn to bind `system_prompt` into `ctx.caller` at call
+# time. The runtime doesn't branch — it just calls `step(ctx)`.
 #
-# | Type | `system_prompt` | Runtime behaviour |
-# |---|---|---|
-# | `Step` | n/a | No caller binding. Pure computation. |
-# | `LMStep` | non-empty | Caller bound with system prompt prepended. |
-# | `LMStep` | empty | Raw caller passed through (pass-through). |
+# | Authoring | Caller behaviour |
+# |---|---|
+# | bare function | Code step — doesn't touch caller |
+# | `@lm()` | Pass-through — raw caller forwarded |
+# | `@lm(system_prompt=...)` | Bound — system prompt prepended to messages |
 #
-# `description` on the base `Step` is for cross-step context (downstream
-# steps reading intent). It is completely decoupled from caller binding.
+# `LMCaller` is a protocol that fixes the caller shape: it must accept
+# `messages` as a keyword argument. Because `@lm(system_prompt=...)`
+# declares that the caller speaks this protocol, the wrapper doesn't
+# need a runtime guard — it just prepends and forwards.
 
 # %%
 from __future__ import annotations
@@ -19,14 +23,20 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
-
-Caller = Callable[..., Any]
+from functools import wraps
+from typing import Any, Protocol, runtime_checkable
 
 # %% [markdown]
-# ## Types
+# ## Protocols and types
 
 # %%
+@runtime_checkable
+class LMCaller(Protocol):
+    def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
+
+Caller = Callable[..., Any]
+StepFn = Callable[["StepContext", ], "StepResult"]
+
 @dataclass
 class StepResult:
     value: Any
@@ -42,28 +52,50 @@ class StepContext:
 
 @dataclass
 class Step:
-    """Pure computation. The runtime does not bind a caller."""
+    """A named unit of work that produces a StepResult."""
     name: str
-    fn: Callable[[StepContext], StepResult]
+    fn: StepFn
     description: str = ""
     def __call__(self, ctx: StepContext) -> StepResult:
         return self.fn(ctx)
 
-@dataclass
-class LMStep(Step):
-    """Needs a caller. Runtime binds system_prompt if present, else passes through."""
-    system_prompt: str = ""
-    def __post_init__(self) -> None:
-        if not self.description and self.system_prompt:
-            self.description = self.system_prompt
+# %% [markdown]
+# ## The `@lm` decorator
+#
+# A real higher-order function: it returns a new `StepFn` that intercepts
+# `ctx.caller` at call time and prepends the system prompt. If no prompt
+# is given, the function passes through unchanged.
+
+# %%
+def lm(system_prompt: str = "", *, description: str = "") -> Callable[[StepFn], StepFn]:
+    """Mark a step function as needing an LM caller.
+
+    - `system_prompt` non-empty → caller bound with prompt prepended.
+    - `system_prompt` empty → raw caller passed through.
+    - Attaches `.lm_description` and `.lm_system_prompt` for introspection.
+    """
+    def decorator(fn: StepFn) -> StepFn:
+        if system_prompt:
+            @wraps(fn)
+            def wrapper(ctx: StepContext) -> StepResult:
+                raw = ctx.caller
+                def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
+                    return raw(messages=[{"role": "system", "content": system_prompt}, *messages], **kwargs)
+                ctx.caller = bound
+                return fn(ctx)
+            out = wrapper
+        else:
+            out = fn
+        out.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
+        out.lm_description = description or system_prompt  # type: ignore[attr-defined]
+        return out
+    return decorator
 
 # %% [markdown]
 # ## Runtime
 #
-# Three-way behaviour:
-# - `Step` → caller not rebound (step doesn't need it)
-# - `LMStep` + `system_prompt` → caller bound with prompt prepended
-# - `LMStep` without → raw caller passed through
+# No branching on step kind. The decorator already handled caller binding
+# inside the wrapped function. The runtime just calls `step(ctx)`.
 
 # %%
 @dataclass
@@ -79,28 +111,12 @@ class SkillResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     trace: dict[str, StepResult] = field(default_factory=dict)
 
-def _bind_caller(raw: Caller, prompt: str) -> Caller:
-    def bound(**kwargs: Any) -> Any:
-        if "messages" not in kwargs:
-            return raw(**kwargs)
-        kwargs["messages"] = [
-            {"role": "system", "content": prompt},
-            *(kwargs["messages"] or []),
-        ]
-        return raw(**kwargs)
-    return bound
-
-_NOOP_CALLER: Caller = lambda **_kw: None
-
 def run_skill(skill: Skill, entry: Any, caller: Caller) -> SkillResult:
-    ctx = StepContext(entry=entry, caller=_NOOP_CALLER, steps=skill.steps)
+    ctx = StepContext(entry=entry, caller=caller, steps=skill.steps)
     trace: dict[str, StepResult] = {}
     last_name, last_result = "(empty)", None
     for i, s in enumerate(skill.steps):
-        if isinstance(s, LMStep):
-            ctx.caller = _bind_caller(caller, s.system_prompt) if s.system_prompt else caller
-        else:
-            ctx.caller = _NOOP_CALLER
+        ctx.caller = caller
         result = s(ctx)
         trace[s.name] = result
         ctx.prior[s.name] = result
@@ -118,7 +134,7 @@ def run_skill(skill: Skill, entry: Any, caller: Caller) -> SkillResult:
     )
 
 # %% [markdown]
-# ## Code steps — plain functions, no caller needed
+# ## Code steps — plain functions, no decorator
 
 # %%
 def parse_weekday(ctx: StepContext) -> StepResult:
@@ -137,7 +153,7 @@ def parse_time(ctx: StepContext) -> StepResult:
     return StepResult(value=None, metadata={"time": f"{h}:{mins:02d}{ampm}"}, resolved=False)
 
 # %% [markdown]
-# ## LM step with system_prompt — caller bound with prompt
+# ## LM step with system_prompt — `@lm(system_prompt=...)` binds the caller
 
 # %%
 VERIFY_PROMPT = """\
@@ -145,10 +161,15 @@ You are a calendar booking verifier.
 Cross-check the prior parser outputs against the raw text.
 Return JSON: {"weekday": ..., "time": ..., "notes": "..."}"""
 
+@lm(system_prompt=VERIFY_PROMPT)
 def verify(ctx: StepContext) -> StepResult:
-    """LM step: caller is pre-bound with VERIFY_PROMPT by the runtime."""
+    """The decorator has already bound ctx.caller with VERIFY_PROMPT."""
     prior_summary = [
-        {"name": s.name, "description": s.description, "metadata": ctx.prior[s.name].metadata}
+        {
+            "name": s.name,
+            "description": s.description or getattr(s.fn, "lm_description", ""),
+            "metadata": ctx.prior[s.name].metadata,
+        }
         for s in ctx.steps if s.name in ctx.prior
     ]
     payload = json.dumps({"text": ctx.entry["text"], "prior": prior_summary}, indent=2)
@@ -161,11 +182,12 @@ def verify(ctx: StepContext) -> StepResult:
     )
 
 # %% [markdown]
-# ## LM step without system_prompt — raw caller passed through
+# ## LM step without system_prompt — `@lm()` passes through raw caller
 
 # %%
+@lm(description="Summarize the booking in one sentence.")
 def summarize(ctx: StepContext) -> StepResult:
-    """LM step with pass-through: builds its own messages, no system prompt."""
+    """Pass-through: builds its own messages, caller is untouched."""
     booking = ctx.prior.get("verify")
     if not booking or not booking.value:
         return StepResult(value="Nothing to summarize.", metadata={"skipped": True})
@@ -178,7 +200,7 @@ def summarize(ctx: StepContext) -> StepResult:
     return StepResult(value=raw, metadata={"source": "pass-through caller"})
 
 # %% [markdown]
-# ## Assemble the skill — all three cases visible
+# ## Assemble the skill
 
 # %%
 book_meeting = Skill(
@@ -186,8 +208,8 @@ book_meeting = Skill(
     steps=[
         Step("parse_weekday", parse_weekday, description="Find a weekday name (Mon-Sun)."),
         Step("parse_time", parse_time, description="Find a clock time like 3pm or 15:00."),
-        LMStep("verify", verify, system_prompt=VERIFY_PROMPT),
-        LMStep("summarize", summarize),
+        Step("verify", verify),
+        Step("summarize", summarize),
     ],
 )
 
@@ -197,7 +219,7 @@ book_meeting = Skill(
 # %%
 call_count = 0
 
-def fake_caller(**kwargs: Any) -> str:
+def fake_caller(*, messages: list[dict[str, str]], **_kwargs: Any) -> str:
     global call_count
     call_count += 1
     if call_count == 1:
@@ -212,19 +234,21 @@ print(f"notes:       {result.metadata}")
 print()
 
 # %% [markdown]
-# ## Inspect the skill: types, descriptions, and caller behaviour
+# ## Inspect: one Step type, decorator metadata visible via introspection
 
 # %%
 for s in book_meeting.steps:
-    kind = type(s).__name__
-    prompt = getattr(s, "system_prompt", None)
-    if kind == "Step":
+    prompt = getattr(s.fn, "lm_system_prompt", None)
+    desc = getattr(s.fn, "lm_description", None)
+    if prompt is None:
         binding = "none (pure code)"
     elif prompt:
         binding = "bound to system_prompt"
     else:
         binding = "raw pass-through"
-    print(f"  {kind:6}  {s.name:16}  caller={binding}")
+    print(f"  {s.name:16}  caller={binding}")
+    if desc:
+        print(f"  {'':16}  lm_description={desc[:60]!r}...")
 
 print()
 print("trace:")
@@ -232,20 +256,33 @@ for name, sr in result.trace.items():
     print(f"  {name:16} resolved={sr.resolved}  meta={sr.metadata}")
 
 # %% [markdown]
-# ## Verify the runtime contract
+# ## Verify: the decorator is a real HOF
 #
-# Code steps get a noop caller — calling it is a no-op (returns None).
-# This makes accidental caller usage in code steps harmless but visible.
+# The system prompt appears in the caller's messages without the step
+# function or the runtime doing anything. The wrapper did it.
 
 # %%
-def code_step_that_tries_caller(ctx: StepContext) -> StepResult:
-    got = ctx.caller(messages=[{"role": "user", "content": "hi"}])
-    return StepResult(value=f"caller returned: {got!r}")
+captured: list[list[dict[str, str]]] = []
 
-test_skill = Skill(
-    name="test",
-    steps=[Step("accidental", code_step_that_tries_caller)],
+def spy_caller(*, messages: list[dict[str, str]], **_kwargs: Any) -> str:
+    captured.append(messages)
+    return json.dumps({"weekday": "Friday", "time": "9:00am", "notes": "ok"})
+
+spy_skill = Skill(
+    name="spy",
+    steps=[
+        Step("parse_weekday", parse_weekday),
+        Step("verify", verify),
+    ],
 )
-r = run_skill(test_skill, {}, caller=fake_caller)
-print(f"\nCode step calling ctx.caller => {r.value}")
-print("(noop caller returned None — the real caller was never exposed)")
+run_skill(spy_skill, {"text": "Meet Friday at 9am"}, caller=spy_caller)
+
+print("\nMessages the caller actually received:")
+for i, msgs in enumerate(captured):
+    print(f"  call {i}:")
+    for m in msgs:
+        role, content = m["role"], m["content"]
+        preview = content[:80].replace("\n", "\\n")
+        print(f"    {role}: {preview}...")
+print()
+print("The system prompt was prepended by the @lm decorator, not by the runtime.")
