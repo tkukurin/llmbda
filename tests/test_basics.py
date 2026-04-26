@@ -13,12 +13,9 @@ from tk.llmbda import (
     StepContext,
     StepResult,
     iter_skill,
+    lm,
     run_skill,
 )
-
-
-def _noop(**_kw: Any) -> None:
-    return None
 
 
 def echo_step(ctx: StepContext) -> StepResult:
@@ -35,16 +32,9 @@ def counting_step(ctx: StepContext) -> StepResult:
     )
 
 
-class DummyResponse:
-    def __init__(self, content):
-        self.choices = [
-            type("Choice", (), {"message": type("Msg", (), {"content": content})()})()
-        ]
-
-
 def test_single_step():
     skill = Skill(name="echo", steps=[Step("echo", echo_step)])
-    result = run_skill(skill, {"x": 1}, _noop)
+    result = run_skill(skill, {"x": 1})
     assert isinstance(result, SkillResult)
     assert result.value == {"x": 1}
     assert result.skill == "echo"
@@ -65,7 +55,7 @@ def test_resolved_short_circuits():
         name="short",
         steps=[Step("resolver", _resolver), Step("unreachable", _unreachable)],
     )
-    result = run_skill(skill, {}, _noop)
+    result = run_skill(skill, {})
     assert result.value == "stopped"
     assert result.resolved_by == "resolver"
     assert list(result.trace) == ["resolver"]
@@ -80,7 +70,7 @@ def test_implicit_resolved_on_last_step():
             Step("c", counting_step),
         ],
     )
-    result = run_skill(skill, {}, _noop)
+    result = run_skill(skill, {})
     assert result.value == 2  # step c sees a and b
     assert result.resolved_by == "c"
     assert list(result.trace) == ["a", "b", "c"]
@@ -98,7 +88,7 @@ def test_prior_accumulates():
         name="acc",
         steps=[Step("deposit", deposit), Step("check", check)],
     )
-    result = run_skill(skill, {}, _noop)
+    result = run_skill(skill, {})
     assert result.value == "saw first"
     assert result.trace["deposit"].value == "first"
     assert result.trace["deposit"].metadata == {"order": 1}
@@ -116,13 +106,13 @@ def test_duplicate_step_names_raise_before_running():
         steps=[Step("same", _step), Step("same", _step)],
     )
     with pytest.raises(ValueError, match="same"):
-        list(iter_skill(skill, {}, _noop))
+        list(iter_skill(skill, {}))
     assert called == []
 
 
 def test_empty_skill():
     skill = Skill(name="noop")
-    result = run_skill(skill, {"x": 1}, _noop)
+    result = run_skill(skill, {"x": 1})
     assert result.value is None
     assert result.skill == "noop"
     assert result.resolved_by == "(empty)"
@@ -134,7 +124,7 @@ def test_step_metadata_preserved_unchanged():
         return StepResult(value=42, metadata={"custom": "data", "extra": True})
 
     skill = Skill(name="meta", steps=[Step("with_meta", _with_meta)])
-    result = run_skill(skill, {}, _noop)
+    result = run_skill(skill, {})
     assert result.metadata == {"custom": "data", "extra": True}
     assert result.skill == "meta"
     assert result.resolved_by == "with_meta"
@@ -148,7 +138,7 @@ def test_step_metadata_not_mutated_by_runtime():
         return emitted
 
     skill = Skill(name="real", steps=[Step("clash", _clashing)])
-    result = run_skill(skill, {}, _noop)
+    result = run_skill(skill, {})
     assert result.skill == "real"
     assert result.resolved_by == "clash"
     assert emitted.metadata == {"skill": "hijacked"}  # unchanged
@@ -164,7 +154,7 @@ def test_iter_yields_each_step_in_order():
             Step("c", counting_step),
         ],
     )
-    yielded = list(iter_skill(skill, {}, _noop))
+    yielded = list(iter_skill(skill, {}))
     assert [name for name, _ in yielded] == ["a", "b", "c"]
     assert [r.value for _, r in yielded] == [0, 1, 2]
 
@@ -181,7 +171,7 @@ def test_iter_stops_after_resolved():
         name="s",
         steps=[Step("stop", _stop), Step("never", _never)],
     )
-    yielded = list(iter_skill(skill, {}, _noop))
+    yielded = list(iter_skill(skill, {}))
     assert [name for name, _ in yielded] == ["stop"]
 
 
@@ -199,7 +189,7 @@ def test_iter_stop_decision_survives_result_mutation():
         name="s",
         steps=[Step("stop", _stop), Step("never", _never)],
     )
-    it = iter_skill(skill, {}, _noop)
+    it = iter_skill(skill, {})
     name, result = next(it)
     assert name == "stop"
 
@@ -220,7 +210,7 @@ def test_iter_break_early():
             Step("c", counting_step),
         ],
     )
-    for name, _ in iter_skill(skill, {}, _noop):
+    for name, _ in iter_skill(skill, {}):
         seen.append(name)
         if name == "a":
             break
@@ -232,133 +222,13 @@ def test_iter_collects_into_dict():
         name="chain",
         steps=[Step("a", counting_step), Step("b", counting_step)],
     )
-    trace = dict(iter_skill(skill, {}, _noop))
+    trace = dict(iter_skill(skill, {}))
     assert set(trace) == {"a", "b"}
     assert trace["b"].value == 1
 
 
 def test_iter_empty_skill_yields_nothing():
-    assert list(iter_skill(Skill(name="noop"), {}, _noop)) == []
-
-
-def test_caller_prepends_step_system_prompt():
-    """Runtime binds ctx.caller to auto-prepend the step's system_prompt."""
-    seen: list[list[dict[str, str]]] = []
-
-    def spy_caller(**kwargs):
-        seen.append(kwargs["messages"])
-        return "ok"
-
-    def llm_step(ctx):
-        ctx.caller(messages=[{"role": "user", "content": "hi"}])
-        return StepResult(value="done")
-
-    skill = Skill(
-        name="s",
-        steps=[Step("llm", llm_step, system_prompt="be terse")],
-    )
-    run_skill(skill, {}, spy_caller)
-    assert seen == [[
-        {"role": "system", "content": "be terse"},
-        {"role": "user", "content": "hi"},
-    ]]
-
-
-def test_caller_does_not_inject_prompt_without_messages():
-    """System prompts are only added to explicit messages kwargs."""
-    captured: list[dict[str, object]] = []
-
-    def spy_caller(**kwargs):
-        captured.append(kwargs)
-        return "ok"
-
-    def llm_step(ctx):
-        ctx.caller(model="noop")
-        return StepResult(value="done")
-
-    skill = Skill(
-        name="s",
-        steps=[Step("llm", llm_step, system_prompt="be terse")],
-    )
-    run_skill(skill, {}, spy_caller)
-    assert captured == [{"model": "noop"}]
-
-
-def test_caller_passes_through_when_prompt_empty():
-    """No system_prompt on the step => caller forwards messages unchanged."""
-    seen: list[list[dict[str, str]]] = []
-
-    def spy_caller(**kwargs):
-        seen.append(kwargs["messages"])
-        return "ok"
-
-    def llm_step(ctx):
-        ctx.caller(messages=[{"role": "user", "content": "hi"}])
-        return StepResult(value="done")
-
-    skill = Skill(name="s", steps=[Step("llm", llm_step)])
-    run_skill(skill, {}, spy_caller)
-    assert seen == [[{"role": "user", "content": "hi"}]]
-
-
-def test_caller_rebinds_between_steps():
-    """Each step sees a caller bound to its own prompt, not a prior step's."""
-    captured: list[list[dict[str, str]]] = []
-
-    def capturing(**kwargs):
-        captured.append(kwargs["messages"])
-        return "ok"
-
-    def fn_a(ctx):
-        ctx.caller(messages=[{"role": "user", "content": "a"}])
-        return StepResult(value=None, resolved=False)
-
-    def fn_b(ctx):
-        ctx.caller(messages=[{"role": "user", "content": "b"}])
-        return StepResult(value="done")
-
-    skill = Skill(
-        name="s",
-        steps=[
-            Step("a", fn_a, system_prompt="prompt-a"),
-            Step("b", fn_b, system_prompt="prompt-b"),
-        ],
-    )
-    run_skill(skill, {}, capturing)
-    assert captured == [
-        [{"role": "system", "content": "prompt-a"},
-         {"role": "user", "content": "a"}],
-        [{"role": "system", "content": "prompt-b"},
-         {"role": "user", "content": "b"}],
-    ]
-
-
-def test_caller_available_in_context():
-    recorded = []
-
-    def spy_step(ctx):
-        recorded.append(ctx.caller)
-        return StepResult(value="ok")
-
-    def fake_caller(**_kw) -> Any:
-        return DummyResponse('{"x": 1}')
-
-    skill = Skill(name="spy", steps=[Step("spy", spy_step)])
-    run_skill(skill, {}, fake_caller)
-    assert recorded == [fake_caller]
-
-
-def test_step_can_call_caller():
-    def llm_step(ctx):
-        raw = ctx.caller(messages=[{"role": "user", "content": "hi"}])
-        return StepResult(value=raw.choices[0].message.content)
-
-    def fake_caller(**_kw) -> Any:
-        return DummyResponse("hello back")
-
-    skill = Skill(name="chat", steps=[Step("llm", llm_step)])
-    result = run_skill(skill, {}, fake_caller)
-    assert result.value == "hello back"
+    assert list(iter_skill(Skill(name="noop"), {})) == []
 
 
 def test_run_skill_propagates_step_exception():
@@ -368,7 +238,7 @@ def test_run_skill_propagates_step_exception():
 
     skill = Skill(name="err", steps=[Step("boom", boom)])
     with pytest.raises(RuntimeError, match="step exploded"):
-        run_skill(skill, {}, _noop)
+        run_skill(skill, {})
 
 
 def test_iter_skill_propagates_and_preserves_prior_yields():
@@ -382,10 +252,189 @@ def test_iter_skill_propagates_and_preserves_prior_yields():
         raise RuntimeError(msg)
 
     skill = Skill(name="err", steps=[Step("ok", ok), Step("boom", boom)])
-    it = iter_skill(skill, {}, _noop)
+    it = iter_skill(skill, {})
     name, result = next(it)
     seen.append(name)
     assert result.value == "ok"
     with pytest.raises(RuntimeError, match="step exploded"):
         next(it)
     assert seen == ["ok"]
+
+
+def test_step_description_from_docstring():
+    def my_step(_ctx: StepContext) -> StepResult:
+        """Extract a weekday name."""
+        return StepResult(value=None)
+
+    s = Step("my_step", my_step)
+    assert s.description == "Extract a weekday name."
+
+
+def test_step_description_explicit_override():
+    def my_step(_ctx: StepContext) -> StepResult:
+        """This docstring is ignored."""
+        return StepResult(value=None)
+
+    s = Step("my_step", my_step, description="Custom description")
+    assert s.description == "Custom description"
+
+
+def test_step_description_no_docstring():
+    s = Step("anon", lambda _ctx: StepResult(value=None))
+    assert s.description == ""
+
+
+def test_step_description_from_lm_wrapped_docstring():
+    def fake(**_kw: Any) -> str:
+        return ""
+
+    @lm(fake)
+    def my_step(_ctx: StepContext, _call: Any) -> StepResult:
+        """LLM step docs."""
+        return StepResult(value=None)
+
+    s = Step("my_step", my_step)
+    assert s.description == "LLM step docs."
+
+
+def test_lm_prepends_system_prompt():
+    seen: list[list[dict[str, str]]] = []
+
+    def spy(*, messages: list[dict[str, str]], **_kw: Any) -> str:
+        seen.append(messages)
+        return "ok"
+
+    @lm(spy, system_prompt="be terse")
+    def llm_step(_ctx: StepContext, call: Any) -> StepResult:
+        call(messages=[{"role": "user", "content": "hi"}])
+        return StepResult(value="done")
+
+    skill = Skill(name="s", steps=[Step("llm", llm_step)])
+    run_skill(skill, {})
+    assert seen == [[
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "hi"},
+    ]]
+
+
+def test_lm_no_prompt_passes_through():
+    seen: list[list[dict[str, str]]] = []
+
+    def spy(*, messages: list[dict[str, str]], **_kw: Any) -> str:
+        seen.append(messages)
+        return "ok"
+
+    @lm(spy)
+    def llm_step(_ctx: StepContext, call: Any) -> StepResult:
+        call(messages=[{"role": "user", "content": "hi"}])
+        return StepResult(value="done")
+
+    skill = Skill(name="s", steps=[Step("llm", llm_step)])
+    run_skill(skill, {})
+    assert seen == [[{"role": "user", "content": "hi"}]]
+
+
+def test_lm_per_step_model():
+    captured: list[str] = []
+
+    def model_a(**_kw: Any) -> str:
+        captured.append("a")
+        return "a"
+
+    def model_b(**_kw: Any) -> str:
+        captured.append("b")
+        return "b"
+
+    @lm(model_a, system_prompt="prompt-a")
+    def step_a(_ctx: StepContext, call: Any) -> StepResult:
+        call(messages=[{"role": "user", "content": "a"}])
+        return StepResult(value=None, resolved=False)
+
+    @lm(model_b, system_prompt="prompt-b")
+    def step_b(_ctx: StepContext, call: Any) -> StepResult:
+        call(messages=[{"role": "user", "content": "b"}])
+        return StepResult(value="done")
+
+    skill = Skill(name="s", steps=[Step("a", step_a), Step("b", step_b)])
+    run_skill(skill, {})
+    assert captured == ["a", "b"]
+
+
+def test_lm_step_receives_bound_caller():
+    def fake(**_kw: Any) -> str:
+        return "hello back"
+
+    @lm(fake)
+    def llm_step(_ctx: StepContext, call: Any) -> StepResult:
+        raw = call(messages=[{"role": "user", "content": "hi"}])
+        return StepResult(value=raw)
+
+    skill = Skill(name="chat", steps=[Step("llm", llm_step)])
+    result = run_skill(skill, {})
+    assert result.value == "hello back"
+
+
+def test_lm_introspection_attrs():
+    def fake(**_kw: Any) -> str:
+        return ""
+
+    @lm(fake, system_prompt="be terse")
+    def llm_step(_ctx: StepContext, _call: Any) -> StepResult:
+        return StepResult(value=None)
+
+    assert llm_step.lm_system_prompt == "be terse"  # type: ignore[attr-defined]
+    assert llm_step.lm_model is fake  # type: ignore[attr-defined]
+
+
+def test_lm_rewrap_for_testing():
+    def original_model(**_kw: Any) -> str:
+        return "original"
+
+    @lm(original_model)
+    def llm_step(_ctx: StepContext, call: Any) -> StepResult:
+        """My LLM step."""
+        return StepResult(value=call(messages=[{"role": "user", "content": "x"}]))
+
+    captured: list[list[dict[str, str]]] = []
+
+    def spy_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
+        captured.append(messages)
+        return "spy"
+
+    rewrapped = lm(spy_model, system_prompt="test prompt")(llm_step.__wrapped__)  # type: ignore[attr-defined]
+    skill = Skill(name="s", steps=[Step("llm", rewrapped)])
+    result = run_skill(skill, {})
+    assert result.value == "spy"
+    assert len(captured) == 1
+    assert captured[0][0] == {"role": "system", "content": "test prompt"}
+
+
+def test_lm_rebinds_between_steps():
+    """Each step sees a caller bound to its own model and prompt."""
+    captured: list[list[dict[str, str]]] = []
+
+    def capturing(*, messages: list[dict[str, str]], **_kw: Any) -> str:
+        captured.append(messages)
+        return "ok"
+
+    @lm(capturing, system_prompt="prompt-a")
+    def fn_a(_ctx: StepContext, call: Any) -> StepResult:
+        call(messages=[{"role": "user", "content": "a"}])
+        return StepResult(value=None, resolved=False)
+
+    @lm(capturing, system_prompt="prompt-b")
+    def fn_b(_ctx: StepContext, call: Any) -> StepResult:
+        call(messages=[{"role": "user", "content": "b"}])
+        return StepResult(value="done")
+
+    skill = Skill(
+        name="s",
+        steps=[Step("a", fn_a), Step("b", fn_b)],
+    )
+    run_skill(skill, {})
+    assert captured == [
+        [{"role": "system", "content": "prompt-a"},
+         {"role": "user", "content": "a"}],
+        [{"role": "system", "content": "prompt-b"},
+         {"role": "user", "content": "b"}],
+    ]

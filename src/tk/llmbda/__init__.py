@@ -5,12 +5,20 @@ Like lambda calculus, but the functions talk back.
 
 from __future__ import annotations
 
+import inspect
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from functools import wraps
+from typing import Any, Protocol
 
-Caller = Callable[..., Any]
+
+class LMCaller(Protocol):
+    def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
+
+
+StepFn = Callable[["StepContext"], "StepResult"]
+
 
 @dataclass
 class StepResult:
@@ -22,25 +30,23 @@ class StepResult:
 
 @dataclass
 class Step:
-    """A named step with an optional system prompt describing its intent.
-
-    The prompt is the step's job description: LLM steps forward it to the model;
-    deterministic steps expose it so later LLM steps can include it as context.
+    """A named unit of work that produces a StepResult.
+    description: auto-populated from fn docstring when empty.
     """
     name: str
-    fn: Callable[[StepContext], StepResult]
-    system_prompt: str = ""
+    fn: StepFn
+    description: str = ""
+    def __post_init__(self) -> None:
+        if not self.description:
+            self.description = inspect.getdoc(self.fn) or ""
+    def __call__(self, ctx: StepContext) -> StepResult:
+        return self.fn(ctx)
 
 
 @dataclass
 class StepContext:
-    """Accumulator threaded through the step sequence.
-
-    ``caller`` is per-step: the runtime rebinds it to prepend the current
-    step's ``system_prompt`` to any ``messages=`` kwarg before forwarding.
-    """
+    """Accumulator threaded through the step sequence."""
     entry: Any
-    caller: Caller
     steps: list[Step] = field(default_factory=list)
     prior: dict[str, StepResult] = field(default_factory=dict)
 
@@ -62,26 +68,27 @@ class SkillResult:
     trace: dict[str, StepResult] = field(default_factory=dict)
 
 
-def _bind_caller(raw: Caller, step: Step) -> Caller:
-    """Wrap *raw* so ``messages=`` kwargs get *step*'s system prompt prepended."""
-    if not step.system_prompt:
-        return raw
-    def bound(**kwargs: Any) -> Any:
-        if "messages" not in kwargs: return raw(**kwargs)
-        msgs = kwargs["messages"] or []
-        kwargs["messages"] = [
-            {"role": "system", "content": step.system_prompt},
-            *msgs,
-        ]
-        return raw(**kwargs)
-    return bound
+def lm(model: LMCaller, *, system_prompt: str = "") -> Callable:
+    """Bind a step function to a model, optionally prepending a system prompt.
+
+    The decorated function receives ``(ctx, call)`` where ``call`` forwards to
+    *model* with the system prompt (if any) prepended to ``messages``.
+    """
+    def decorator(fn: Callable) -> StepFn:
+        @wraps(fn)
+        def wrapper(ctx: StepContext) -> StepResult:
+            def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
+                if system_prompt:
+                    messages = [{"role": "system", "content": system_prompt}, *messages]
+                return model(messages=messages, **kwargs)
+            return fn(ctx, bound)
+        wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
+        wrapper.lm_model = model  # type: ignore[attr-defined]
+        return wrapper
+    return decorator
 
 
-def iter_skill(
-    skill: Skill,
-    entry: Any,
-    caller: Caller,
-) -> Iterator[tuple[str, StepResult]]:
+def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
     """Yield ``(step_name, result)`` for each executed step, in order.
 
     Execution stops when a step resolves or after the final step.
@@ -90,27 +97,23 @@ def iter_skill(
     if dups := [k for k, n in Counter(s.name for s in steps).items() if n > 1]:
         raise ValueError(dups)
 
-    ctx = StepContext(entry=entry, caller=caller, steps=steps)
+    ctx = StepContext(entry=entry, steps=steps)
     last_idx = len(steps) - 1
     for i, step in enumerate(steps):
-        ctx.caller = _bind_caller(caller, step)
-        result = step.fn(ctx)
+        result = step(ctx)
         ctx.prior[step.name] = result
         should_stop = result.resolved or i == last_idx
         yield step.name, result
-        if should_stop: return
+        if should_stop:
+            return
 
 
-def run_skill(
-    skill: Skill,
-    entry: Any,
-    caller: Caller,
-) -> SkillResult:
+def run_skill(skill: Skill, entry: Any) -> SkillResult:
     """Execute *skill* to completion and return the final ``SkillResult``."""
     trace: dict[str, StepResult] = {}
     last: StepResult | None = None
     last_name = "(empty)"
-    for name, result in iter_skill(skill, entry, caller):
+    for name, result in iter_skill(skill, entry):
         trace[name] = result
         last, last_name = result, name
 
@@ -143,13 +146,15 @@ def strip_fences(text: str) -> str:
 
 
 __all__ = [
-    "Caller",
+    "LMCaller",
     "Skill",
     "SkillResult",
     "Step",
     "StepContext",
+    "StepFn",
     "StepResult",
     "iter_skill",
+    "lm",
     "run_skill",
     "strip_fences",
 ]

@@ -7,16 +7,15 @@ import re
 
 import pytest
 
-from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill, strip_fences
-
-
-def _noop(**_kw: object) -> None:
-    return None
-
-
-PARSE_MINUTES_PROMPT = "Find an exact minute match like '45 mins' or '30 minutes'."
-PARSE_HOURS_PROMPT = (
-    "Find an exact hour match like '1.5 hours' or '2 hrs' and convert to minutes."
+from tk.llmbda import (
+    LMCaller,
+    Skill,
+    Step,
+    StepContext,
+    StepResult,
+    lm,
+    run_skill,
+    strip_fences,
 )
 
 LLM_SYSTEM_PROMPT = """\
@@ -24,7 +23,7 @@ You are a culinary data extractor.
 You receive a JSON object with:
 - "text": A messy snippet from a recipe blog.
 - "prior_steps": The earlier parsers that ran, each with its own intent
-  (system_prompt), value, and metadata.
+  (description), value, and metadata.
 
 Your task: Extract the cooking time in minutes, or explain why it's missing.
 
@@ -41,7 +40,7 @@ Rules:
 
 
 def parse_minutes(ctx: StepContext) -> StepResult:
-    """Try to find an exact minute match (e.g., '45 mins')."""
+    """Find an exact minute match like '45 mins' or '30 minutes'."""
     text = ctx.entry.get("text", "").lower()
     print(f"\n[Trace] Running Step 1: parse_minutes on '{text}'")
     match = re.search(r"(\d+)\s*(?:min|minute)s?", text)
@@ -56,7 +55,7 @@ def parse_minutes(ctx: StepContext) -> StepResult:
 
 
 def parse_hours(ctx: StepContext) -> StepResult:
-    """Try to find an exact hour match and convert to minutes (e.g., '1.5 hours')."""
+    """Find an exact hour match like '1.5 hours' or '2 hrs' and convert to minutes."""
     text = ctx.entry.get("text", "").lower()
     print(f"[Trace] Running Step 2: parse_hours on '{text}'")
     match = re.search(r"(\d+(?:\.\d+)?)\s*(?:hour|hr)s?", text)
@@ -73,7 +72,7 @@ def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
     return [
         {
             "name": s.name,
-            "system_prompt": s.system_prompt,
+            "description": s.description,
             "value": ctx.prior[s.name].value,
             "metadata": ctx.prior[s.name].metadata,
         }
@@ -82,7 +81,7 @@ def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
     ]
 
 
-def llm_diagnose(ctx: StepContext) -> StepResult:
+def _llm_diagnose(ctx: StepContext, call: LMCaller) -> StepResult:
     """Use an LLM to semantically parse the time or diagnose the failure."""
     print("[Trace] Running Step 3: llm_diagnose (Fallback Triggered)")
     user_msg = json.dumps(
@@ -92,7 +91,7 @@ def llm_diagnose(ctx: StepContext) -> StepResult:
     print(f"  -> Prompting LLM with prior context:\n{user_msg}")
 
     try:
-        raw_response = ctx.caller(
+        raw_response = call(
             messages=[{"role": "user", "content": user_msg}],
         )
         print(f"  -> LLM Raw Response: {raw_response}")
@@ -112,14 +111,18 @@ def llm_diagnose(ctx: StepContext) -> StepResult:
         )
 
 
-extract_cook_time = Skill(
-    name="extract_cook_time",
-    steps=[
-        Step("parse_minutes", parse_minutes, system_prompt=PARSE_MINUTES_PROMPT),
-        Step("parse_hours", parse_hours, system_prompt=PARSE_HOURS_PROMPT),
-        Step("llm_diagnose", llm_diagnose, system_prompt=LLM_SYSTEM_PROMPT),
-    ],
-)
+def _make_skill(caller: LMCaller) -> Skill:
+    return Skill(
+        name="extract_cook_time",
+        steps=[
+            Step("parse_minutes", parse_minutes),
+            Step("parse_hours", parse_hours),
+            Step(
+                "llm_diagnose",
+                lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_diagnose),
+            ),
+        ],
+    )
 
 
 TEST_CASES = [
@@ -151,7 +154,7 @@ TEST_CASES = [
 
 
 def test_parse_minutes_found():
-    ctx = StepContext(entry={"text": "Bake for 30 mins."}, caller=_noop)
+    ctx = StepContext(entry={"text": "Bake for 30 mins."})
     result = parse_minutes(ctx)
     assert result.value == 30
     assert result.resolved is True
@@ -159,7 +162,7 @@ def test_parse_minutes_found():
 
 
 def test_parse_minutes_missing():
-    ctx = StepContext(entry={"text": "Bake until golden."}, caller=_noop)
+    ctx = StepContext(entry={"text": "Bake until golden."})
     result = parse_minutes(ctx)
     assert result.value is None
     assert result.resolved is False
@@ -167,80 +170,85 @@ def test_parse_minutes_missing():
 
 
 def test_parse_hours_integer():
-    ctx = StepContext(entry={"text": "Roast for 2 hours."}, caller=_noop)
+    ctx = StepContext(entry={"text": "Roast for 2 hours."})
     result = parse_hours(ctx)
     assert result.value == 120
     assert result.resolved is True
 
 
 def test_parse_hours_decimal():
-    ctx = StepContext(entry={"text": "Roast for 1.5 hours."}, caller=_noop)
+    ctx = StepContext(entry={"text": "Roast for 1.5 hours."})
     result = parse_hours(ctx)
     assert result.value == 90
     assert result.resolved is True
 
 
 def test_parse_hours_missing():
-    ctx = StepContext(entry={"text": "Bake for 5 minutes."}, caller=_noop)
+    ctx = StepContext(entry={"text": "Bake for 5 minutes."})
     result = parse_hours(ctx)
     assert result.value is None
     assert result.resolved is False
 
 
 def test_llm_diagnose_parses_json():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return '{"value": 30, "diagnosis": "half an hour = 30 min"}'
 
-    ctx = StepContext(entry={"text": "half an hour"}, caller=fake)
-    result = llm_diagnose(ctx)
+    ctx = StepContext(entry={"text": "half an hour"})
+    result = _llm_diagnose(ctx, fake)
     assert result.value == 30
     assert result.metadata["diagnosis"] == "half an hour = 30 min"
 
 
 def test_llm_diagnose_strips_fences():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return '```json\n{"value": 15, "diagnosis": "quarter hour"}\n```'
 
-    ctx = StepContext(entry={"text": "a quarter of an hour"}, caller=fake)
-    result = llm_diagnose(ctx)
+    ctx = StepContext(entry={"text": "a quarter of an hour"})
+    result = _llm_diagnose(ctx, fake)
     assert result.value == 15
 
 
 def test_llm_diagnose_null_value():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return '{"value": null, "diagnosis": "no time mentioned"}'
 
-    ctx = StepContext(entry={"text": "cook until bubbly"}, caller=fake)
-    result = llm_diagnose(ctx)
+    ctx = StepContext(entry={"text": "cook until bubbly"})
+    result = _llm_diagnose(ctx, fake)
     assert result.value is None
     assert result.metadata["diagnosis"] == "no time mentioned"
 
 
 def test_llm_diagnose_parse_error():
-    def fake(**_kw):
+    def fake(**_kw: object) -> str:
         return "not JSON at all"
 
-    ctx = StepContext(entry={"text": "..."}, caller=fake)
-    result = llm_diagnose(ctx)
+    ctx = StepContext(entry={"text": "..."})
+    result = _llm_diagnose(ctx, fake)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
 
 
-def test_prior_steps_payload_includes_system_prompts():
-    """llm_diagnose receives earlier step intents, values, and metadata."""
+def test_prior_steps_payload_and_system_prompt():
+    """llm_diagnose receives prior step descriptions and its own system prompt."""
     captured: dict[str, str] = {}
 
-    def fake(**kwargs):
-        captured["user"] = kwargs["messages"][1]["content"]
-        captured["system"] = kwargs["messages"][0]["content"]
+    def spy(*, messages: list[dict[str, str]], **_kw: object) -> str:
+        captured["system"] = messages[0]["content"]
+        captured["user"] = messages[1]["content"]
         return '{"value": null, "diagnosis": "nothing"}'
 
-    run_skill(extract_cook_time, {"text": "cook until bubbly"}, caller=fake)
+    skill = _make_skill(spy)
+    run_skill(skill, {"text": "cook until bubbly"})
     payload = json.loads(captured["user"])
     names = [s["name"] for s in payload["prior_steps"]]
     assert names == ["parse_minutes", "parse_hours"]
-    assert payload["prior_steps"][0]["system_prompt"] == PARSE_MINUTES_PROMPT
-    assert payload["prior_steps"][1]["system_prompt"] == PARSE_HOURS_PROMPT
+    assert payload["prior_steps"][0]["description"] == (
+        "Find an exact minute match like '45 mins' or '30 minutes'."
+    )
+    assert payload["prior_steps"][1]["description"] == (
+        "Find an exact hour match like '1.5 hours' or '2 hrs' and convert to minutes."
+    )
     assert payload["prior_steps"][0]["value"] is None
     assert payload["prior_steps"][1]["value"] is None
     assert payload["prior_steps"][0]["metadata"] == {"reason": "no_minute_match"}
@@ -253,7 +261,8 @@ def test_prior_steps_payload_includes_system_prompts():
 def test_recipe_pipeline(tc, openai_caller):
     print(f"\nTesting Case: {tc['id']}")
 
-    result = run_skill(extract_cook_time, {"text": tc["text"]}, caller=openai_caller)
+    skill = _make_skill(openai_caller)
+    result = run_skill(skill, {"text": tc["text"]})
     output = {
         "skill": result.skill,
         "resolved_by": result.resolved_by,

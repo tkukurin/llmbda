@@ -13,7 +13,7 @@
 # 3. `parse_duration` — regex for duration phrases (`30 mins`, `2 hours`).
 # 4. `parse_topic` — regex for `"about|re: <topic>"` snippets.
 # 5. `llm_verify_and_fill` — reads `ctx.prior` (extractions) and `ctx.steps`
-#    (each step's `system_prompt`, i.e. its intent) and produces a final
+#    (each step's `description`, i.e. its intent) and produces a final
 #    `Booking` dict or a structured diagnosis.
 #
 # Intermediate steps return `resolved=False` so the runtime keeps walking the
@@ -21,9 +21,9 @@
 # The verifier is the terminal step and is what `SkillResult.resolved_by` will
 # point to.
 #
-# The notebook runs end-to-end without an API key — a scripted fake caller
-# returns plausible LLM responses. A final cell shows how to swap in a real
-# OpenAI client.
+# The `@lm(model)` decorator binds a model at definition time. The model must
+# exist before the function is decorated. A scripted fake caller is defined
+# first so the notebook runs end-to-end without an API key.
 
 # %%
 from __future__ import annotations
@@ -31,28 +31,33 @@ from __future__ import annotations
 import json
 import re
 
-from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill, strip_fences
+from tk.llmbda import (
+    LMCaller,
+    Skill,
+    Step,
+    StepContext,
+    StepResult,
+    iter_skill,
+    lm,
+    run_skill,
+    strip_fences,
+)
 
 # %% [markdown]
 # ## Step 1 — weekday
 #
 # A thin regex over the seven weekday names. We return the match as `value`
-# and always fall through. The `system_prompt` captures the step's intent so
-# the verifier can read it back.
+# and always fall through. The docstring captures the step's intent so
+# the verifier can read it back via `Step.description`.
 
 # %%
-WEEKDAY_PROMPT = (
-    "Find an explicit weekday name (Monday..Sunday, case-insensitive) "
-    "and return it capitalised."
-)
-
 WEEKDAYS = (
     "monday", "tuesday", "wednesday", "thursday",
     "friday", "saturday", "sunday",
 )
 
 def parse_weekday(ctx: StepContext) -> StepResult:
-    """Regex-find a weekday in `ctx.entry['text']`."""
+    """Find an explicit weekday name (Monday..Sunday) and return it capitalised."""
     text = ctx.entry["text"].lower()
     for day in WEEKDAYS:
         if re.search(rf"\b{day}\b", text):
@@ -68,9 +73,7 @@ def parse_weekday(ctx: StepContext) -> StepResult:
     )
 
 # %%
-parse_weekday(
-    StepContext(entry={"text": "meet Tuesday at 3pm"}, caller=lambda **_: None),
-).value
+parse_weekday(StepContext(entry={"text": "meet Tuesday at 3pm"})).value
 
 # %% [markdown]
 # ## Step 2 — time
@@ -79,11 +82,6 @@ parse_weekday(
 # return both start and end so duration can be inferred downstream).
 
 # %%
-TIME_PROMPT = (
-    "Find a clock time like '3pm', '15:00', or a range '9-10am'. "
-    "When a range is given, return both start and end."
-)
-
 _TIME_RE = re.compile(
     r"""
     \b(\d{1,2})                 # hour
@@ -100,7 +98,7 @@ def _fmt(h: int, m: int, ampm: str | None) -> str:
     return f"{h:02d}:{m:02d}"
 
 def parse_time(ctx: StepContext) -> StepResult:
-    """Regex-find a clock time or time range."""
+    """Find a clock time like '3pm', '15:00', or a range '9-10am'."""
     text = ctx.entry["text"]
     m = _TIME_RE.search(text)
     if not m:
@@ -120,24 +118,20 @@ def parse_time(ctx: StepContext) -> StepResult:
 
 # %%
 for text in ("3pm", "meeting 9-10am", "at 15:00", "no time here"):
-    r = parse_time(StepContext(entry={"text": text}, caller=lambda **_: None))
+    r = parse_time(StepContext(entry={"text": text}))
     print(f"{text!r:30} -> value={r.value} meta={r.metadata}")
 
 # %% [markdown]
 # ## Step 3 — duration
 
 # %%
-DURATION_PROMPT = (
-    "Find a duration phrase like '30 minutes', '2 hrs', 'half an hour' "
-    "and return it in minutes. Only handle explicit numeric forms here."
-)
-
 _DUR_RE = re.compile(
     r"(\d+(?:\.\d+)?)\s*(hour|hr|hrs|minute|min|mins)s?\b",
     re.IGNORECASE,
 )
 
 def parse_duration(ctx: StepContext) -> StepResult:
+    """Find a duration phrase like '30 minutes' or '2 hrs' and return minutes."""
     text = ctx.entry["text"]
     m = _DUR_RE.search(text)
     if not m:
@@ -160,14 +154,10 @@ def parse_duration(ctx: StepContext) -> StepResult:
 # Grabs whatever follows "about" or "re:" up to end-of-sentence.
 
 # %%
-TOPIC_PROMPT = (
-    "Find a topic phrase introduced by 'about' or 're:' and return the "
-    "topic as a short noun phrase."
-)
-
 _TOPIC_RE = re.compile(r"(?:about|re:)\s+(.+?)(?:[.!?]|$)", re.IGNORECASE)
 
 def parse_topic(ctx: StepContext) -> StepResult:
+    """Find a topic phrase introduced by 'about' or 're:' and return it."""
     m = _TOPIC_RE.search(ctx.entry["text"])
     if not m:
         return StepResult(
@@ -182,104 +172,11 @@ def parse_topic(ctx: StepContext) -> StepResult:
     )
 
 # %% [markdown]
-# ## Step 5 — LLM verifier & filler
-#
-# This is where `ctx.prior` + `ctx.steps` earn their keep. The step builds a
-# user-message that shows the model:
-#
-# - the original `text`,
-# - for every prior step: its `name`, its `system_prompt` (what it was looking
-#   for), its `value` (what it found), and its `metadata` (why).
-#
-# The model is asked to return a final `Booking`, *cross-checking* each prior
-# finding against the raw text. If a regex step said "no weekday" but the text
-# says "tomorrow", the verifier owns that resolution — and it can also disagree
-# with a regex step that over-matched.
-#
-# Note: `ctx.caller` is pre-bound to this step's `system_prompt` (`VERIFY_PROMPT`
-# below) by the runtime. The body passes user turns only.
-
-# %%
-VERIFY_PROMPT = """\
-You are a calendar booking verifier.
-You receive a JSON object with:
-- "text": the original request.
-- "prior_steps": each earlier parser with {name, system_prompt, value, metadata}.
-
-Your job is to produce a final booking by cross-checking the prior_steps
-against the raw text. You MUST:
-- confirm each prior finding against the text, or correct it,
-- fill any gaps using the text alone (do not invent),
-- flag anything the user left ambiguous.
-
-Return ONLY JSON:
-{
-  "booking": {
-    "weekday":  "<Monday..Sunday or null>",
-    "start":    "<HH:MM or H[:MM]am/pm or null>",
-    "end":      "<same format, or null>",
-    "minutes":  <int or null>,
-    "topic":    "<short string or null>"
-  },
-  "notes": "<one sentence: what you confirmed, corrected, or flagged>"
-}
-"""
-
-def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
-    """Name + intent + outcome for each step that has already run."""
-    return [
-        {
-            "name": s.name,
-            "system_prompt": s.system_prompt,
-            "value": ctx.prior[s.name].value,
-            "metadata": ctx.prior[s.name].metadata,
-        }
-        for s in ctx.steps
-        if s.name in ctx.prior
-    ]
-
-def llm_verify_and_fill(ctx: StepContext) -> StepResult:
-    """Ask the LLM to cross-check prior extractions and produce a final Booking."""
-    payload = {
-        "text": ctx.entry["text"],
-        "prior_steps": _prior_steps_payload(ctx),
-    }
-    try:
-        raw = ctx.caller(
-            messages=[{"role": "user", "content": json.dumps(payload, indent=2)}],
-        )
-        parsed = json.loads(strip_fences(raw))
-        return StepResult(
-            value=parsed.get("booking"),
-            metadata={"notes": parsed.get("notes", ""), "llm_raw": raw},
-        )
-    except Exception as exc:  # noqa: BLE001 -- verifier must survive any caller/parse error
-        return StepResult(
-            value=None,
-            metadata={"reason": "llm_parse_error", "error": str(exc)},
-        )
-
-# %% [markdown]
-# ## Assemble the skill
-
-# %%
-book_meeting = Skill(
-    name="book_meeting",
-    steps=[
-        Step("parse_weekday",  parse_weekday,  system_prompt=WEEKDAY_PROMPT),
-        Step("parse_time",     parse_time,     system_prompt=TIME_PROMPT),
-        Step("parse_duration", parse_duration, system_prompt=DURATION_PROMPT),
-        Step("parse_topic",    parse_topic,    system_prompt=TOPIC_PROMPT),
-        Step("verify",         llm_verify_and_fill, system_prompt=VERIFY_PROMPT),
-    ],
-)
-
-# %% [markdown]
 # ## A scripted caller so the notebook runs without an API key
 #
 # The fake caller matches on substrings of the input `text` and returns a
-# pre-baked JSON response. This lets you see the verifier payload flow
-# through without burning tokens. Swap it for the real caller at the bottom.
+# pre-baked JSON response. This is defined **before** the LLM step so that
+# `@lm(scripted_caller, ...)` can capture it at decoration time.
 
 # %%
 def _canned_response(user_msg: str) -> str:
@@ -328,11 +225,107 @@ def _canned_response(user_msg: str) -> str:
         "notes": "No canned response for this input.",
     })
 
-def scripted_caller(**kwargs: object) -> str:
+def scripted_caller(*, messages: list[dict[str, str]], **_kw: object) -> str:
     """Pretend to be an OpenAI caller; returns a JSON string."""
-    messages = kwargs["messages"]
-    user_msg = messages[1]["content"]  # type: ignore[index]
+    user_msg = messages[1]["content"]
     return _canned_response(user_msg)
+
+# %% [markdown]
+# ## Step 5 — LLM verifier & filler
+#
+# This is where `ctx.prior` + `ctx.steps` earn their keep. The step builds a
+# user-message that shows the model:
+#
+# - the original `text`,
+# - for every prior step: its `name`, its `description` (what it was looking
+#   for), its `value` (what it found), and its `metadata` (why).
+#
+# The model is asked to return a final `Booking`, *cross-checking* each prior
+# finding against the raw text. If a regex step said "no weekday" but the text
+# says "tomorrow", the verifier owns that resolution — and it can also disagree
+# with a regex step that over-matched.
+#
+# The `@lm` decorator binds the model and system prompt at decoration time.
+# The step receives the bound caller as its second argument.
+
+# %%
+VERIFY_PROMPT = """\
+You are a calendar booking verifier.
+You receive a JSON object with:
+- "text": the original request.
+- "prior_steps": each earlier parser with {name, description, value, metadata}.
+
+Your job is to produce a final booking by cross-checking the prior_steps
+against the raw text. You MUST:
+- confirm each prior finding against the text, or correct it,
+- fill any gaps using the text alone (do not invent),
+- flag anything the user left ambiguous.
+
+Return ONLY JSON:
+{
+  "booking": {
+    "weekday":  "<Monday..Sunday or null>",
+    "start":    "<HH:MM or H[:MM]am/pm or null>",
+    "end":      "<same format, or null>",
+    "minutes":  <int or null>,
+    "topic":    "<short string or null>"
+  },
+  "notes": "<one sentence: what you confirmed, corrected, or flagged>"
+}
+"""
+
+def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
+    """Name + intent + outcome for each step that has already run."""
+    return [
+        {
+            "name": s.name,
+            "description": s.description,
+            "value": ctx.prior[s.name].value,
+            "metadata": ctx.prior[s.name].metadata,
+        }
+        for s in ctx.steps
+        if s.name in ctx.prior
+    ]
+
+@lm(scripted_caller, system_prompt=VERIFY_PROMPT)
+def llm_verify_and_fill(ctx: StepContext, call: LMCaller) -> StepResult:
+    """Cross-check prior extractions against the raw text, produce a Booking."""
+    payload = {
+        "text": ctx.entry["text"],
+        "prior_steps": _prior_steps_payload(ctx),
+    }
+    try:
+        raw = call(
+            messages=[{"role": "user", "content": json.dumps(payload, indent=2)}],
+        )
+        parsed = json.loads(strip_fences(raw))
+        return StepResult(
+            value=parsed.get("booking"),
+            metadata={"notes": parsed.get("notes", ""), "llm_raw": raw},
+        )
+    except Exception as exc:  # noqa: BLE001
+        return StepResult(
+            value=None,
+            metadata={"reason": "llm_parse_error", "error": str(exc)},
+        )
+
+# %% [markdown]
+# ## Assemble the skill
+#
+# No explicit `description=` needed — `Step.__post_init__` pulls from
+# the docstring. `@wraps` copies `__doc__` through the decorator.
+
+# %%
+book_meeting = Skill(
+    name="book_meeting",
+    steps=[
+        Step("parse_weekday",  parse_weekday),
+        Step("parse_time",     parse_time),
+        Step("parse_duration", parse_duration),
+        Step("parse_topic",    parse_topic),
+        Step("verify",         llm_verify_and_fill),
+    ],
+)
 
 # %% [markdown]
 # ## Run it on a handful of realistic requests
@@ -346,7 +339,7 @@ REQUESTS = [
 ]
 
 for text in REQUESTS:
-    result = run_skill(book_meeting, {"text": text}, caller=scripted_caller)
+    result = run_skill(book_meeting, {"text": text})
     print(f"\n--- {text}")
     print(f"resolved_by: {result.resolved_by}")
     print(f"booking:     {result.value}")
@@ -362,11 +355,23 @@ for text in REQUESTS:
 # %%
 def dump_verifier_payload(text: str) -> None:
     """Run the skill with a spy caller that prints the verifier's user msg."""
-    def spy(**kwargs: object) -> str:
-        user_msg = kwargs["messages"][1]["content"]  # type: ignore[index]
+    def spy(*, messages: list[dict[str, str]], **_kw: object) -> str:
+        user_msg = messages[1]["content"]
         print(user_msg)
         return _canned_response(user_msg)
-    run_skill(book_meeting, {"text": text}, caller=spy)
+
+    spy_verify = lm(spy, system_prompt=VERIFY_PROMPT)(llm_verify_and_fill.__wrapped__)
+    spy_skill = Skill(
+        name="book_meeting",
+        steps=[
+            Step("parse_weekday",  parse_weekday),
+            Step("parse_time",     parse_time),
+            Step("parse_duration", parse_duration),
+            Step("parse_topic",    parse_topic),
+            Step("verify",         spy_verify),
+        ],
+    )
+    run_skill(spy_skill, {"text": text})
 
 dump_verifier_payload("Meeting Friday 9-10am re: hiring.")
 
@@ -384,29 +389,68 @@ dump_verifier_payload("Meeting Friday 9-10am re: hiring.")
 # runs.
 
 # %%
-from tk.llmbda import iter_skill
-
 for name, step_result in iter_skill(
     book_meeting,
     {"text": "Meeting Friday 9-10am re: hiring."},
-    caller=scripted_caller,
 ):
     print(f"{name:16} value={step_result.value!r:8} meta={step_result.metadata}")
 
 # %% [markdown]
-# ## Swapping in a real OpenAI caller
+# ## Re-binding for testing
 #
-# The caller contract is a keyword-only callable that accepts whatever kwargs
-# your steps pass (typically `messages=...`) and returns the model's reply as
-# a string. Here's a minimal real caller; uncomment and set `OPENAI_API_KEY`
-# to use it.
+# `@wraps` sets `__wrapped__`, so you can re-decorate the original
+# function body with a different model. Same function, different binding.
 
 # %%
+captured: list[list[dict[str, str]]] = []
+
+def spy_caller(*, messages: list[dict[str, str]], **_kw: object) -> str:
+    captured.append(messages)
+    return json.dumps({
+        "booking": {
+            "weekday": "Friday", "start": "9:00am", "end": "10:00am",
+            "minutes": 60, "topic": "hiring",
+        },
+        "notes": "spy confirmed",
+    })
+
+verify_spy = lm(spy_caller, system_prompt=VERIFY_PROMPT)(
+    llm_verify_and_fill.__wrapped__,
+)
+
+spy_skill = Skill(
+    name="spy",
+    steps=[
+        Step("parse_weekday", parse_weekday),
+        Step("verify", verify_spy),
+    ],
+)
+run_skill(spy_skill, {"text": "Meet Friday at 9am"})
+
+print("\nMessages the spy caller received:")
+for i, msgs in enumerate(captured):
+    print(f"  call {i}:")
+    for m in msgs:
+        role, content = m["role"], m["content"]
+        preview = content[:80].replace("\n", "\\n")
+        print(f"    {role}: {preview}...")
+print()
+print("System prompt prepended by @lm, model bound at decoration time.")
+
+# %% [markdown]
+# ## Swapping in a real OpenAI caller
+#
+# The caller contract is `(*, messages=..., **kw) -> str`. Here's a minimal
+# real caller; uncomment and set `OPENAI_API_KEY` to use it. Because the model
+# is bound at decoration time, you re-decorate the inner function:
+#
+# ```python
 # import os, urllib.request
 #
-# def openai_caller(**kwargs: object) -> str:
+# def openai_caller(*, messages, **kwargs):
 #     payload = json.dumps(
-#         {"model": "gpt-4o-mini", "temperature": 0.0, **kwargs},
+#         {"model": "gpt-4o-mini", "temperature": 0.0,
+#          "messages": messages, **kwargs},
 #     ).encode("utf-8")
 #     req = urllib.request.Request(
 #         "https://api.openai.com/v1/chat/completions",
@@ -420,9 +464,19 @@ for name, step_result in iter_skill(
 #         body = json.loads(response.read().decode("utf-8"))
 #         return body["choices"][0]["message"]["content"]
 #
-# result = run_skill(
-#     book_meeting,
-#     {"text": "Meeting Friday 9-10am re: hiring."},
-#     caller=openai_caller,
+# real_verify = lm(openai_caller, system_prompt=VERIFY_PROMPT)(
+#     llm_verify_and_fill.__wrapped__,
 # )
+# real_skill = Skill(
+#     name="book_meeting",
+#     steps=[
+#         Step("parse_weekday",  parse_weekday),
+#         Step("parse_time",     parse_time),
+#         Step("parse_duration", parse_duration),
+#         Step("parse_topic",    parse_topic),
+#         Step("verify",         real_verify),
+#     ],
+# )
+# result = run_skill(real_skill, {"text": "Meeting Friday 9-10am re: hiring."})
 # print(result)
+# ```
