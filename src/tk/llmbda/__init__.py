@@ -18,6 +18,7 @@ class LMCaller(Protocol):
 
 
 StepFn = Callable[["StepContext"], "StepResult"]
+LMStepFn = Callable[["StepContext", LMCaller], "StepResult"]
 
 
 @dataclass
@@ -31,16 +32,19 @@ class StepResult:
 @dataclass
 class Step:
     """A named unit of work that produces a StepResult.
-    description: auto-populated from fn docstring when empty.
+    description: auto-populated when empty, preferring the step's ``@lm``
+        system prompt (the LLM's actual instructions) over the fn docstring.
     """
     name: str
     fn: StepFn
     description: str = ""
     def __post_init__(self) -> None:
         if not self.description:
-            self.description = inspect.getdoc(self.fn) or ""
-    def __call__(self, ctx: StepContext) -> StepResult:
-        return self.fn(ctx)
+            self.description = (
+                getattr(self.fn, "lm_system_prompt", "")
+                or inspect.getdoc(self.fn)
+                or ""
+            )
 
 
 @dataclass
@@ -68,19 +72,25 @@ class SkillResult:
     trace: dict[str, StepResult] = field(default_factory=dict)
 
 
-def lm(model: LMCaller, *, system_prompt: str = "") -> Callable:
+def lm(
+    model: LMCaller, *, system_prompt: str = "",
+) -> Callable[[LMStepFn], StepFn]:
     """Bind a step function to a model, optionally prepending a system prompt.
 
     The decorated function receives ``(ctx, call)`` where ``call`` forwards to
     *model* with the system prompt (if any) prepended to ``messages``.
     """
-    def decorator(fn: Callable) -> StepFn:
+    if system_prompt:
+        def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
+            return model(
+                messages=[{"role": "system", "content": system_prompt}, *messages],
+                **kwargs,
+            )
+    else:
+        bound = model
+    def decorator(fn: LMStepFn) -> StepFn:
         @wraps(fn)
         def wrapper(ctx: StepContext) -> StepResult:
-            def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
-                if system_prompt:
-                    messages = [{"role": "system", "content": system_prompt}, *messages]
-                return model(messages=messages, **kwargs)
             return fn(ctx, bound)
         wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
         wrapper.lm_model = model  # type: ignore[attr-defined]
@@ -100,7 +110,7 @@ def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
     ctx = StepContext(entry=entry, steps=steps)
     last_idx = len(steps) - 1
     for i, step in enumerate(steps):
-        result = step(ctx)
+        result = step.fn(ctx)
         ctx.prior[step.name] = result
         should_stop = result.resolved or i == last_idx
         yield step.name, result
@@ -147,6 +157,7 @@ def strip_fences(text: str) -> str:
 
 __all__ = [
     "LMCaller",
+    "LMStepFn",
     "Skill",
     "SkillResult",
     "Step",
