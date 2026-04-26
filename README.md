@@ -38,23 +38,12 @@ result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
 # SkillResult(skill="dates", resolved_by="extract_date", value="2025-01-15", ...)
 ```
 
-## OpenAI adapter
+See `examples/readme.py` for example chaining an LLM extractor, and a verifier
+that cross-checks both prior steps:
 
-Any callable matching `LMCaller` (`(*, messages: list[dict], **kwargs) -> str`)
-works as the `@lm` model. Minimal adapter using the `openai` SDK:
-
-```python
-from openai import OpenAI
-client = OpenAI()
-
-def openai_caller(*, messages, **kwargs):
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini", messages=messages, **kwargs,
-    )
-    return resp.choices[0].message.content
+```bash
+OPENAI_API_KEY=sk-... uv run examples/readme.py
 ```
-
-Drop-in replacement for `fake_model` in the snippet above.
 
 ## Concepts
 
