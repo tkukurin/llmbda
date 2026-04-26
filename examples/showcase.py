@@ -31,10 +31,10 @@ def greet(ctx: SkillContext) -> StepResult:
     name = ctx.entry.get("name", "world")
     return StepResult(value=f"hello, {name}")
 
-skill_greet = Skill(name="greeter", steps=[Skill("greet", fn=greet)])
+skill_greet = Skill(name="greeter", steps=[Skill("λ::greet", fn=greet)])
 r = run_skill(skill_greet, {"name": "λ"})
 assert r.value == "hello, λ"
-assert r.resolved_by == "greet"
+assert r.resolved_by == "λ::greet"
 print(f"1. {r.value}")
 
 # %% [markdown]
@@ -49,16 +49,16 @@ def add_ten(ctx: SkillContext) -> StepResult:
     return StepResult(value=ctx.prev.value + 10)
 
 def format_result(ctx: SkillContext) -> StepResult:
-    doubled = ctx.trace["double"].value
+    doubled = ctx.trace["λ::double"].value
     added = ctx.prev.value
     return StepResult(value=f"{doubled} -> {added}")
 
 skill_math = Skill(
     name="math",
     steps=[
-        Skill("double", fn=double),
-        Skill("add_ten", fn=add_ten),
-        Skill("format", fn=format_result),
+        Skill("λ::double", fn=double),
+        Skill("λ::add_ten", fn=add_ten),
+        Skill("λ::format", fn=format_result),
     ],
 )
 r = run_skill(skill_math, {"x": 5})
@@ -85,15 +85,15 @@ def expensive_compute(_ctx: SkillContext) -> StepResult:
 
 skill_cache = Skill(
     name="cached",
-    steps=[Skill("cache", fn=try_cache), Skill("compute", fn=expensive_compute)],
+    steps=[Skill("λ::cache", fn=try_cache), Skill("λ::compute", fn=expensive_compute)],
 )
 
 r_hit = run_skill(skill_cache, {"key": "known-key"})
-assert r_hit.resolved_by == "cache"
+assert r_hit.resolved_by == "λ::cache"
 assert r_hit.value == "cached-value"
 
 r_miss = run_skill(skill_cache, {"key": "other"})
-assert r_miss.resolved_by == "compute"
+assert r_miss.resolved_by == "λ::compute"
 assert r_miss.value == "computed-fresh"
 print(f"3. hit={r_hit.resolved_by}, miss={r_miss.resolved_by}")
 
@@ -112,7 +112,7 @@ def extract_date(ctx: SkillContext, call) -> StepResult:
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
     return StepResult(value=raw.strip())
 
-skill_date = Skill(name="dates", steps=[Skill("extract", fn=extract_date)])
+skill_date = Skill(name="dates", steps=[Skill("ψ::extract", fn=extract_date)])
 r = run_skill(skill_date, {"text": "let's meet on the 15th of January 2025"})
 assert r.value == "2025-01-15"
 print(f"4. {r.value}")
@@ -151,10 +151,10 @@ def normalize(ctx: SkillContext) -> StepResult:
     return StepResult(value=ctx.entry["text"].lower().strip())
 
 def count_words(ctx: SkillContext) -> StepResult:
-    return StepResult(value=len(ctx.trace["normalize"].value.split()))
+    return StepResult(value=len(ctx.trace["λ::normalize"].value.split()))
 
 def tag_length(ctx: SkillContext) -> StepResult:
-    n = ctx.trace["count_words"].value
+    n = ctx.trace["λ::count_words"].value
     tag = "short" if n < 5 else "medium" if n < 15 else "long"
     return StepResult(value=tag)
 
@@ -162,20 +162,20 @@ skill_nested = Skill(
     name="analyzer",
     steps=[
         Skill("preprocess", steps=[
-            Skill("normalize", fn=normalize),
-            Skill("count_words", fn=count_words),
+            Skill("λ::normalize", fn=normalize),
+            Skill("λ::count_words", fn=count_words),
         ]),
         Skill("classify", steps=[
-            Skill("tag_length", fn=tag_length),
+            Skill("λ::tag_length", fn=tag_length),
         ]),
     ],
 )
 
 r = run_skill(skill_nested, {"text": "  Hello World  "})
 assert r.value == "short"
-assert r.trace["normalize"].value == "hello world"
-assert r.trace["count_words"].value == 2
-print(f"6. tag={r.value}, words={r.trace['count_words'].value}")
+assert r.trace["λ::normalize"].value == "hello world"
+assert r.trace["λ::count_words"].value == 2
+print(f"6. tag={r.value}, words={r.trace['λ::count_words'].value}")
 
 # %% [markdown]
 # ## 7. Streaming execution with iter_skill
@@ -185,7 +185,7 @@ log: list[str] = []
 for name, result in iter_skill(skill_math, {"x": 3}):
     log.append(f"{name}={result.value}")
 
-assert log == ["double=6", "add_ten=16", "format=6 -> 16"]
+assert log == ["λ::double=6", "λ::add_ten=16", "λ::format=6 -> 16"]
 print(f"7. {log}")
 
 # %% [markdown]
@@ -195,10 +195,10 @@ print(f"7. {log}")
 seen = []
 for name, _result in iter_skill(skill_nested, {"text": "one two three four five six"}):
     seen.append(name)
-    if name == "count_words":
+    if name == "λ::count_words":
         break
 
-assert seen == ["normalize", "count_words"]
+assert seen == ["λ::normalize", "λ::count_words"]
 print(f"8. stopped after: {seen}")
 
 # %% [markdown]
@@ -226,7 +226,7 @@ def extract_date_llm(ctx: SkillContext, call) -> StepResult:
 
 def verify_date(ctx: SkillContext) -> StepResult:
     """Check whether the extracted value is a valid ISO date."""
-    value = ctx.trace["ψ::extract"].value
+    value = ctx.trace["ψ::extract_date"].value
     valid = bool(value and _ISO_RE.fullmatch(str(value)))
     return StepResult(value=value, metadata={"valid": valid})
 
@@ -250,8 +250,8 @@ skill_retry = Skill(
     name="retry",
     fn=retry_extract_verify,
     steps=[
-        Skill("ψ::extract", fn=extract_date_llm),
-        Skill("ψ::verify", fn=verify_date),
+        Skill("ψ::extract_date", fn=extract_date_llm),
+        Skill("λ::verify", fn=verify_date),
     ],
 )
 r = run_skill(skill_retry, {"text": "next tuesday"})
@@ -278,19 +278,19 @@ def classify(ctx: SkillContext, call) -> StepResult:
 
 @lm(model_expensive, system_prompt="Confirm booking.")
 def confirm(ctx: SkillContext, call) -> StepResult:
-    intent = ctx.trace["classify"].value
+    intent = ctx.trace["ψ::classify"].value
     payload = json.dumps({"text": ctx.entry["text"], "intent": intent})
     raw = call(messages=[{"role": "user", "content": payload}])
     return StepResult(value=json.loads(raw))
 
 skill_multi_model = Skill(
     name="booking",
-    steps=[Skill("classify", fn=classify), Skill("confirm", fn=confirm)],
+    steps=[Skill("ψ::classify", fn=classify), Skill("ψ::confirm", fn=confirm)],
 )
 r = run_skill(skill_multi_model, {"text": "book Tuesday 3pm"})
 assert r.value["confirmed"] is True
-assert r.trace["classify"].value["intent"] == "booking"
-print(f"10. intent={r.trace['classify'].value['intent']}, slot={r.value['slot']}")
+assert r.trace["ψ::classify"].value["intent"] == "booking"
+print(f"10. intent={r.trace['ψ::classify'].value['intent']}, slot={r.value['slot']}")
 
 # %% [markdown]
 # ## 11. Test re-binding: swap model for testing via __wrapped__
@@ -303,7 +303,7 @@ def spy_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
     return "spy-date"
 
 rewrapped = lm(spy_model, system_prompt="test prompt")(extract_date.__wrapped__)
-skill_spy = Skill(name="spy", steps=[Skill("extract", fn=rewrapped)])
+skill_spy = Skill(name="spy", steps=[Skill("ψ::extract", fn=rewrapped)])
 r = run_skill(skill_spy, {"text": "whenever"})
 assert r.value == "spy-date"
 assert captured_messages[-1][0]["content"] == "test prompt"
@@ -338,8 +338,8 @@ def bad_step(ctx: SkillContext) -> StepResult:
 skill_bad = Skill(
     name="bad",
     steps=[
-        Skill("real_step", fn=lambda _: StepResult(value=1)),
-        Skill("bad", fn=bad_step),
+        Skill("λ::real_step", fn=lambda _: StepResult(value=1)),
+        Skill("λ::bad", fn=bad_step),
     ],
 )
 try:
@@ -347,7 +347,7 @@ try:
 except KeyError as e:
     err = str(e)
     assert "typo" in err
-    assert "real_step" in err
+    assert "λ::real_step" in err
     print(f"14. KeyError includes available steps: {err}")
 
 # %% [markdown]
@@ -358,7 +358,7 @@ def optional_lookup(ctx: SkillContext) -> StepResult:
     maybe = ctx.trace.get("nonexistent")
     return StepResult(value="fallback" if maybe is None else maybe.value)
 
-skill_get = Skill(name="opt", steps=[Skill("a", fn=optional_lookup)])
+skill_get = Skill(name="opt", steps=[Skill("λ::a", fn=optional_lookup)])
 r = run_skill(skill_get, {})
 assert r.value == "fallback"
 print(f"15. optional lookup={r.value}")
@@ -375,7 +375,7 @@ def later(_ctx: SkillContext) -> StepResult:
 
 skill_forward_ref = Skill(
     name="fwd",
-    steps=[Skill("early", fn=references_future), Skill("later", fn=later)],
+    steps=[Skill("λ::early", fn=references_future), Skill("λ::later", fn=later)],
 )
 issues = check_skill(skill_forward_ref)
 assert any("later" in i for i in issues)
@@ -408,7 +408,7 @@ def rich_step(_ctx: SkillContext) -> StepResult:
         },
     )
 
-skill_rich = Skill(name="rich", steps=[Skill("classify", fn=rich_step)])
+skill_rich = Skill(name="rich", steps=[Skill("λ::classify", fn=rich_step)])
 r = run_skill(skill_rich, {})
 assert r.metadata["confidence"] == 0.92
 print(f"18. intent={r.value}, confidence={r.metadata['confidence']}")
@@ -427,7 +427,7 @@ print(f"19. empty skill: resolved_by={r.resolved_by}")
 
 # %%
 r = run_skill(skill_nested, {"text": "a b c d e f g h i j k l m n o p"})
-assert set(r.trace) == {"normalize", "count_words", "tag_length"}
+assert set(r.trace) == {"λ::normalize", "λ::count_words", "λ::tag_length"}
 assert r.value == "long"
 print(f"20. trace keys: {list(r.trace)}, final={r.value}")
 
