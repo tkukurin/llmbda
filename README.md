@@ -6,13 +6,13 @@ steps into a skill; the runtime walks them in order until one resolves.
 ## Deterministic skill
 
 ```python
-from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill
+from tk.llmbda import Skill, SkillContext, StepResult, run_skill
 
-def greet(ctx: StepContext) -> StepResult:
+def greet(ctx: SkillContext) -> StepResult:
     name = ctx.entry.get("name", "world")
     return StepResult(value=f"hello, {name}")
 
-skill = Skill(name="greeter", steps=[Step("greet", greet)])
+skill = Skill(name="greeter", steps=[Skill("greet", fn=greet)])
 result = run_skill(skill, {"name": "λ"})
 # SkillResult(skill="greeter", resolved_by="greet", value="hello, λ", ...)
 ```
@@ -22,20 +22,20 @@ result = run_skill(skill, {"name": "λ"})
 Self-contained with a fake model so the snippet runs as-is:
 
 ```python
-from tk.llmbda import Skill, Step, StepContext, StepResult, lm, run_skill
+from tk.llmbda import Skill, SkillContext, StepResult, lm, run_skill
 
 def fake_model(*, messages, **_):
-    return "2025-01-15"  # pretend the LLM returned an ISO date
+    return "2025-01-15"
 
 @lm(fake_model, system_prompt="Extract a date. Return ISO format.")
-def extract_date(ctx: StepContext, call) -> StepResult:
+def extract_date(ctx: SkillContext, call) -> StepResult:
     """Extract a date from natural language."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
     return StepResult(value=raw)
 
-skill = Skill(name="dates", steps=[Step("extract_date", extract_date)])
+skill = Skill(name="dates", steps=[Skill("extract", fn=extract_date)])
 result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
-# SkillResult(skill="dates", resolved_by="extract_date", value="2025-01-15", ...)
+# SkillResult(skill="dates", resolved_by="extract", value="2025-01-15", ...)
 ```
 
 ## Multi-step with `ctx.prev`
@@ -43,15 +43,15 @@ result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
 Each step can access the previous step's result via `ctx.prev`:
 
 ```python
-from tk.llmbda import Skill, Step, StepContext, StepResult, run_skill
+from tk.llmbda import Skill, SkillContext, StepResult, run_skill
 
-def step_a(ctx: StepContext) -> StepResult:
+def step_a(ctx: SkillContext) -> StepResult:
     return StepResult(value=ctx.entry["x"] * 2)
 
-def step_b(ctx: StepContext) -> StepResult:
+def step_b(ctx: SkillContext) -> StepResult:
     return StepResult(value=ctx.prev.value + 10)
 
-skill = Skill(name="math", steps=[Step("a", step_a), Step("b", step_b)])
+skill = Skill(name="math", steps=[Skill("a", fn=step_a), Skill("b", fn=step_b)])
 result = run_skill(skill, {"x": 5})
 # result.value == 20
 ```
@@ -59,64 +59,117 @@ result = run_skill(skill, {"x": 5})
 Before any step runs, `ctx.prev` is the `ROOT` sentinel (`ROOT.value is None`).
 Use `ctx.prev is ROOT` to check if you're the first step.
 
-## Loop
+## Short-circuit with `resolved=True`
 
-`loop(*steps, name=..., max_iter=..., until=...)` repeats inner steps until
-`until(ctx)` returns `True`, an inner step returns `resolved=True`, or
-`max_iter` is hit. It returns a single `Step`, so it composes anywhere a
-step can go:
+Steps fall through by default (`resolved=False`). Set `resolved=True` to
+stop early — remaining steps are skipped:
 
 ```python
-from tk.llmbda import Skill, Step, StepContext, StepResult, loop, run_skill
+def try_cache(ctx: SkillContext) -> StepResult:
+    if ctx.entry.get("key") in CACHE:
+        return StepResult(value=CACHE[ctx.entry["key"]], resolved=True)
+    return StepResult(value=None)
 
-def draft(ctx: StepContext) -> StepResult:
-    prev = ctx.prior.get("draft")
-    v = (prev.value + 1) if prev else 1
-    return StepResult(value=v)
+def expensive(ctx: SkillContext) -> StepResult:
+    return StepResult(value=compute(ctx.entry))
 
-def check(ctx: StepContext) -> StepResult:
-    return StepResult(value=ctx.prior["draft"].value)
+skill = Skill(name="s", steps=[Skill("cache", fn=try_cache), Skill("compute", fn=expensive)])
+```
 
+## Nested composition
+
+`Skill` is the single composition primitive. Leaf (has `fn`), composite
+(has `steps`), or orchestrator (has both):
+
+```python
 skill = Skill(
-    name="refine",
+    name="analyzer",
     steps=[
-        loop(
-            Step("draft", draft),
-            Step("check", check),
-            name="refine_loop",
-            max_iter=5,
-            until=lambda ctx: ctx.prior["draft"].value >= 3,
-        ),
+        Skill("preprocess", steps=[
+            Skill("normalize", fn=normalize),
+            Skill("count_words", fn=count_words),
+        ]),
+        Skill("classify", steps=[
+            Skill("tag_length", fn=tag_length),
+        ]),
     ],
 )
-result = run_skill(skill, {})
-# SkillResult(skill="refine", resolved_by="refine_loop", value=3, ...)
 ```
 
-- The loop always returns `resolved=False`, so downstream skill steps run after it.
-- Inner `resolved=True` breaks the loop (skips remaining inner steps) but does not stop the skill.
-- `until` satisfied breaks the loop after all inner steps complete that iteration.
-- `max_iter` exhaustion exits normally.
-- Inner steps update `ctx.prior` and `ctx.prev` each iteration, so they see each other's latest output.
-- Loops nest: a `loop(...)` inside another `loop(...)` works as expected.
+The runtime walks composites via DFS. All leaves share a single `ctx.trace`.
 
-See `examples/readme.py` for a loop that validates and retries LLM date extraction:
+## Orchestrator: `fn` + `steps`
 
-```bash
-OPENAI_API_KEY=sk-... uv run examples/readme.py
+A skill with both `fn` and `steps` is an orchestrator — `fn` controls how
+the children execute. The runtime sets `ctx.skills` to the skill's children
+before calling `fn`, so there's no duplication:
+
+```python
+def retry(ctx: SkillContext) -> StepResult:
+    """Run children up to 3 times until valid."""
+    inner = Skill(name="inner", steps=ctx.skills)
+    for attempt in range(1, 4):
+        r = run_skill(inner, ctx.entry)
+        if r.metadata.get("valid"):
+            return StepResult(value=r.value, metadata={"attempts": attempt})
+    return StepResult(value=r.value, metadata={"valid": False})
+
+skill = Skill(
+    name="retry",
+    fn=retry,
+    steps=[
+        Skill("ψ::extract", fn=extract_date_llm),
+        Skill("ψ::verify", fn=verify_date),
+    ],
+)
 ```
+
+- Children run in a fresh `SkillContext` (via `run_skill`), so they don't
+  see the outer trace. Pass data through `entry` if needed.
+- `ctx.skills` is restored after `fn` returns (or raises).
+
+## Static validation
+
+`check_skill` catches trace-key typos and forward references at definition
+time via AST analysis:
+
+```python
+from tk.llmbda import check_skill
+
+issues = check_skill(skill)
+# ["'bad_step' references undeclared trace key 'typo'"]
+```
+
+- Validates orchestrator children as a separate scope.
+- Checks `ctx.trace["key"]` and `ctx.trace.get("key")` patterns.
 
 ## Concepts
 
-- **`StepResult.resolved`** — defaults to `False`; steps fall through by default. Set `resolved=True` to short-circuit the skill or break a loop. The last step stops the skill regardless of `resolved`.
-- **`ctx.prev`** — the most recently executed step's `StepResult`. Before any step runs it is `ROOT` (a sentinel with `value=None`). Updated by both `iter_skill` and `loop`.
-- **`ctx.prior`** — dict of all prior step results keyed by name. Raises an informative `KeyError` listing available steps on a miss; use `.get()` for optional lookups.
+- **`Skill`** — recursive composition primitive. Leaf (`fn`), composite (`steps`), or orchestrator (`fn` + `steps`).
+- **`StepResult.resolved`** — defaults to `False`; steps fall through. Set `True` to short-circuit.
+- **`ctx.prev`** — most recently executed step's `StepResult`. Starts as `ROOT` (`value=None`).
+- **`ctx.trace`** — dict of all prior results keyed by step name. Raises informative `KeyError` on miss; use `.get()` for optional lookups.
 - **`ctx.entry`** — the original input passed to `run_skill`.
-- **`ctx.steps`** — the full list of `Step` objects in the skill.
-- **`@lm(model, system_prompt=...)`** — binds *model* (and optional system prompt) at decoration time. Decorated fn signature is `(ctx, call)`; `call` prepends `system_prompt` before forwarding to *model*.
-- **`Step.description`** — human-readable summary; falls back to the fn docstring via `__post_init__`. Separate from `@lm` system prompts; read those via `step.fn.lm_system_prompt`.
-- **`StepResult.value`** — the step's output: parsed data, extracted values, model responses, or `None`.
-- **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, parse errors, confidence.
-- **`loop(*steps, name, max_iter, until)`** — repeats inner steps, returns a single `Step`. Always returns `resolved=False` so post-loop steps run.
-- **`iter_skill`** — same execution as `run_skill` but yields `(name, result)` per step for live observation or early exit.
-- **Test re-binding** — `lm(fake)(my_step.__wrapped__)` re-decorates the original fn body with a different model.
+- **`ctx.skills`** — for orchestrators: the skill's declared children. For leaves: the top-level leaves list.
+- **`@lm(model, system_prompt=...)`** — binds model at decoration time. Decorated fn is `(ctx, call)`; `call` prepends `system_prompt`.
+- **`Skill.description`** — human-readable summary; falls back to fn docstring. Separate from `@lm` system prompts (read those via `fn.lm_system_prompt`).
+- **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, confidence.
+- **`iter_skill`** — same as `run_skill` but yields `(name, result)` per step for streaming or early exit.
+- **`check_skill`** — static validation of trace-key references. Catches typos and forward refs.
+- **Test re-binding** — `lm(fake)(my_step.__wrapped__)` re-decorates with a different model.
+
+## Examples
+
+```bash
+# deterministic + LLM date extraction with retry
+OPENAI_API_KEY=sk-... uv run examples/readme.py
+
+# calendar booking: regex parsers + LLM verifier
+uv run examples/calendar_booking.py
+
+# support triage: extraction, classification, validation loop
+uv run examples/support_triage.py
+
+# all 20 use cases in one file (no external deps)
+uv run examples/showcase.py
+```
