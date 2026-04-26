@@ -17,10 +17,6 @@ class LMCaller(Protocol):
     def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
 
 
-StepFn = Callable[["StepContext"], "StepResult"]
-LMStepFn = Callable[["StepContext", LMCaller], "StepResult"]
-
-
 @dataclass
 class StepResult:
     """What a single step produces. ``resolved=False`` falls to the next step."""
@@ -31,20 +27,16 @@ class StepResult:
 
 @dataclass
 class Step:
-    """A named unit of work that produces a StepResult.
-    description: auto-populated when empty, preferring the step's ``@lm``
-        system prompt (the LLM's actual instructions) over the fn docstring.
+    """Named unit of work.
+    description: human-readable summary; docstring fallback. Separate from
+            @lm system prompts (read those via fn.lm_system_prompt).
     """
     name: str
     fn: StepFn
     description: str = ""
     def __post_init__(self) -> None:
         if not self.description:
-            self.description = (
-                getattr(self.fn, "lm_system_prompt", "")
-                or inspect.getdoc(self.fn)
-                or ""
-            )
+            self.description = inspect.getdoc(self.fn) or ""
 
 
 @dataclass
@@ -53,6 +45,10 @@ class StepContext:
     entry: Any
     steps: list[Step] = field(default_factory=list)
     prior: dict[str, StepResult] = field(default_factory=dict)
+
+
+StepFn = Callable[[StepContext], StepResult]
+LMStepFn = Callable[[StepContext, LMCaller], StepResult]
 
 
 @dataclass
