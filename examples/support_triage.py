@@ -6,7 +6,8 @@
 # - Deterministic steps extract account/order IDs and urgency signals.
 # - Scripted LLM steps classify intent and draft a triage decision.
 # - A validation/repair loop catches policy violations and asks for a corrected draft.
-# - The final markdown cell records ergonomic observations from building this example.
+# - A post-loop step attaches final status, demonstrating that loops don't
+#   stop the skill.
 
 # %%
 from __future__ import annotations
@@ -26,6 +27,16 @@ from tk.llmbda import (
     run_skill,
     strip_fences,
 )
+
+NORMALIZE = "λ::normalize"
+IDENTIFIERS = "λ::identifiers"
+URGENCY = "λ::urgency"
+CLASSIFY = "ψ::classify"
+DRAFT = "ψ::draft"
+VALIDATE = "λ::validate"
+REPAIR = "ψ::repair"
+REFINE = "refine_triage"
+SUMMARIZE = "λ::summarize"
 
 # %% [markdown]
 # ## Sample tickets
@@ -93,40 +104,34 @@ _ACCESS_RE = re.compile(
 )
 
 
-def ticket_text(ctx: StepContext) -> str:
-    ticket = ctx.entry
-    return f"{ticket['subject']}\n\n{ticket['body']}"
-
-
 def normalize_ticket(ctx: StepContext) -> StepResult:
     """Normalize the support ticket into a compact text payload."""
     ticket = ctx.entry
-    text = ticket_text(ctx)
-    normalized = {
+    text = f"{ticket['subject']}\n\n{ticket['body']}"
+    return StepResult({
         "id": ticket["id"],
         "channel": ticket["channel"],
         "customer_tier": ticket["customer_tier"],
         "subject": ticket["subject"].strip(),
         "text": re.sub(r"\s+", " ", text).strip(),
-    }
-    return StepResult(normalized, resolved=False)
+    })
 
 
 def extract_identifiers(ctx: StepContext) -> StepResult:
     """Extract account, order, and email identifiers from the ticket text."""
-    text = ctx.prior["λ::normalize"].value["text"]
+    text = ctx.prior[NORMALIZE].value["text"]
     identifiers = {
         "account_ids": sorted({m.group(0).lower() for m in _ACCOUNT_RE.finditer(text)}),
         "order_ids": sorted({m.group(0).upper() for m in _ORDER_RE.finditer(text)}),
         "emails": sorted({m.group(0).lower() for m in _EMAIL_RE.finditer(text)}),
     }
     missing = [name for name, values in identifiers.items() if not values]
-    return StepResult(identifiers, {"missing": missing}, resolved=False)
+    return StepResult(identifiers, {"missing": missing})
 
 
 def detect_urgency(ctx: StepContext) -> StepResult:
     """Detect urgency and coarse keyword features."""
-    text = ctx.prior["λ::normalize"].value["text"]
+    text = ctx.prior[NORMALIZE].value["text"]
     features = {
         "urgent": bool(_URGENT_RE.search(text)),
         "billing": bool(_BILLING_RE.search(text)),
@@ -149,10 +154,7 @@ def detect_urgency(ctx: StepContext) -> StepResult:
         severity = "sev2"
     else:
         severity = "sev3"
-    return StepResult(
-        {"features": features, "score": score, "severity": severity},
-        resolved=False,
-    )
+    return StepResult({"features": features, "score": score, "severity": severity})
 
 
 # %% [markdown]
@@ -162,6 +164,12 @@ def detect_urgency(ctx: StepContext) -> StepResult:
 # It inspects the bound system prompt to decide which role it is playing.
 
 # %%
+def _lm_json_call(call: LMCaller, payload: dict[str, Any]) -> tuple[Any, str]:
+    """Send a JSON payload to the caller, return (parsed_response, raw_string)."""
+    raw = call(messages=[{"role": "user", "content": json.dumps(payload)}])
+    return json.loads(strip_fences(raw)), raw
+
+
 def _read_json_user_message(messages: list[dict[str, str]]) -> dict[str, Any]:
     return json.loads(strip_fences(messages[-1]["content"]))
 
@@ -299,13 +307,12 @@ Return ONLY JSON with intent, confidence, and signals.
 @lm(scripted_support_model, system_prompt=CLASSIFY_PROMPT)
 def classify_intent(ctx: StepContext, call: LMCaller) -> StepResult:
     """Classify the customer's support intent."""
-    payload = {
-        "ticket": ctx.prior["λ::normalize"].value,
-        "identifiers": ctx.prior["λ::identifiers"].value,
-        "urgency": ctx.prior["λ::urgency"].value,
-    }
-    raw = call(messages=[{"role": "user", "content": json.dumps(payload)}])
-    return StepResult(json.loads(strip_fences(raw)), {"llm_raw": raw}, resolved=False)
+    parsed, raw = _lm_json_call(call, {
+        "ticket": ctx.prior[NORMALIZE].value,
+        "identifiers": ctx.prior[IDENTIFIERS].value,
+        "urgency": ctx.prior[URGENCY].value,
+    })
+    return StepResult(parsed, {"llm_raw": raw})
 
 
 DRAFT_PROMPT = """\
@@ -318,34 +325,35 @@ customer_reply, and internal_note.
 @lm(scripted_support_model, system_prompt=DRAFT_PROMPT)
 def draft_triage(ctx: StepContext, call: LMCaller) -> StepResult:
     """Draft a support triage decision from extracted features."""
-    payload = {
-        "ticket": ctx.prior["λ::normalize"].value,
-        "identifiers": ctx.prior["λ::identifiers"].value,
-        "urgency": ctx.prior["λ::urgency"].value,
-        "intent": ctx.prior["ψ::classify"].value,
-    }
-    raw = call(messages=[{"role": "user", "content": json.dumps(payload)}])
-    return StepResult(json.loads(strip_fences(raw)), {"llm_raw": raw}, resolved=False)
+    parsed, raw = _lm_json_call(call, {
+        "ticket": ctx.prior[NORMALIZE].value,
+        "identifiers": ctx.prior[IDENTIFIERS].value,
+        "urgency": ctx.prior[URGENCY].value,
+        "intent": ctx.prior[CLASSIFY].value,
+    })
+    return StepResult(parsed, {"llm_raw": raw})
 
 # %% [markdown]
 # ## Policy validation and repair loop
 #
-# This loop validates the latest draft. If invalid, it asks the scripted model
-# for a repaired draft and validates again.
+# The loop validates the latest draft. If invalid, it asks the scripted model
+# for a repaired draft and validates again. `validate_triage` returns
+# `resolved=True` when the draft passes, which breaks the loop but does NOT
+# stop the skill — the post-loop summarize step still runs.
+#
+# `ctx.prev` tracks the most recently executed step's result, which makes
+# the old `_latest_draft` helper unnecessary:
+#
+# - First iteration: `ctx.prev` is the draft step's result.
+# - After repair: `ctx.prev` is repair's result.
+# - Second validate: `ctx.prev` is repair's result — the latest draft.
 
 # %%
-def _latest_draft(ctx: StepContext) -> dict[str, Any]:
-    repaired = ctx.prior.get("ψ::repair")
-    if repaired:
-        return repaired.value
-    return ctx.prior["ψ::draft"].value
-
-
 def validate_triage(ctx: StepContext) -> StepResult:
     """Validate the latest triage draft against support policy."""
-    draft = _latest_draft(ctx)
-    urgency = ctx.prior["λ::urgency"].value
-    identifiers = ctx.prior["λ::identifiers"].value
+    draft = ctx.prev.value
+    urgency = ctx.prior[URGENCY].value
+    identifiers = ctx.prior[IDENTIFIERS].value
     issues = []
     if (
         draft["intent"] == "production_incident"
@@ -374,33 +382,44 @@ Return ONLY the corrected triage JSON. Do not add commentary.
 @lm(scripted_support_model, system_prompt=REPAIR_PROMPT)
 def repair_triage(ctx: StepContext, call: LMCaller) -> StepResult:
     """Repair the latest triage draft using validation issues."""
-    payload = {
-        "ticket": ctx.prior["λ::normalize"].value,
-        "draft": _latest_draft(ctx),
-        "issues": ctx.prior["λ::validate"].metadata["issues"],
-    }
-    raw = call(messages=[{"role": "user", "content": json.dumps(payload)}])
-    return StepResult(json.loads(strip_fences(raw)), {"llm_raw": raw}, resolved=False)
+    parsed, raw = _lm_json_call(call, {
+        "ticket": ctx.prior[NORMALIZE].value,
+        "draft": ctx.prev.value,
+        "issues": ctx.prev.metadata["issues"],
+    })
+    return StepResult(parsed, {"llm_raw": raw})
+
+
+# %% [markdown]
+# ## Post-loop summarize step
+#
+# Demonstrates that the loop does not stop the skill. This step runs after the
+# validation/repair loop completes and attaches a status field to the result.
+
+# %%
+def summarize(ctx: StepContext) -> StepResult:
+    """Attach final status based on validation outcome."""
+    triage = ctx.prev.value
+    valid = ctx.prev.metadata.get("valid", False)
+    status = "validated" if valid else "needs_review"
+    return StepResult({**triage, "status": status}, ctx.prev.metadata)
 
 
 support_triage = Skill(
     name="support_triage",
     steps=[
-        Step("λ::normalize", normalize_ticket),
-        Step("λ::identifiers", extract_identifiers),
-        Step("λ::urgency", detect_urgency),
-        Step("ψ::classify", classify_intent),
-        Step("ψ::draft", draft_triage),
+        Step(NORMALIZE, normalize_ticket),
+        Step(IDENTIFIERS, extract_identifiers),
+        Step(URGENCY, detect_urgency),
+        Step(CLASSIFY, classify_intent),
+        Step(DRAFT, draft_triage),
         loop(
-            Step("λ::validate", validate_triage),
-            Step("ψ::repair", repair_triage),
-            name="refine_triage",
+            Step(VALIDATE, validate_triage),
+            Step(REPAIR, repair_triage),
+            name=REFINE,
             max_iter=2,
-            until=lambda ctx: bool(
-                ctx.prior.get("λ::validate")
-                and ctx.prior["λ::validate"].metadata.get("valid")
-            ),
         ),
+        Step(SUMMARIZE, summarize),
     ],
 )
 
@@ -426,44 +445,19 @@ for name, step_result in result.trace.items():
     print(f"metadata: {json.dumps(step_result.metadata, indent=2)}")
 
 # %% [markdown]
-# ## Ergonomics observations from this example
+# ## Ergonomic observations
 #
-# What works well:
+# Building this example surfaced several framework-level issues and resolutions:
 #
-# - `Step` and `StepResult` make a heterogeneous pipeline easy to read.
-# - Plain Python composition is enough for realistic routing policy.
-# - Scripted `LMCaller` fakes make LLM paths testable without mocks or network calls.
-# - `Step.description` via docstrings is useful when serialising context for
-#   later model calls.
-# - `loop(...)` composes as a normal step, so retry/repair logic stays local.
-#
-# Issues and non-ergonomic spots:
-#
-# - `StepResult.resolved=True` is a footgun for intermediate steps; most
-#   steps in this notebook need `resolved=False`.
-# - A successful loop resolves the whole skill, so post-loop finalisation must
-#   be inside the loop or omitted.
-# - `until` is checked only after all inner loop steps run; to skip repair
-#   after successful validation, validation must return `resolved=True`.
-# - `resolved=True` means both "this step is valid" and "stop the skill",
-#   which is awkward for validators.
-# - `ctx.prior` stores only the latest value per step name, so retry history
-#   is lost.
-# - Inner loop step names share the global `ctx.prior` namespace, making
-#   collisions easy in larger skills.
-# - `ctx.steps` contains the outer skill plan, not the loop's inner steps, so
-#   loop children are harder to introspect.
-# - LLM steps are detected indirectly by function attributes; a first-class
-#   step kind would make compile/export easier.
-# - There is no structured way to express required inputs/outputs for a step,
-#   so validation uses ad-hoc dictionary keys.
-# - The loop metadata exposed for compile currently omits the `until`
-#   predicate, so generated docs cannot fully explain stop conditions.
-#
-# Design pressure suggested by this notebook:
-#
-# - Consider `StepResult(stop=False)` or separate `status` from `resolved`.
-# - Consider preserving per-iteration loop traces.
-# - Consider typed loop metadata instead of ad-hoc function attributes.
-# - Consider helper APIs for "latest prior from any of these names" and
-#   "serialise prior payload".
+# - **`resolved` defaults to `False`.** Steps fall through by default; only
+#   intentional control flow (`resolved=True`) short-circuits or breaks loops.
+#   Eliminates `resolved=False` noise from every intermediate step.
+# - **`ctx.prev` eliminates `_latest_draft`.** The old helper picked repair's
+#   result if present, else draft's. `ctx.prev` tracks the most recently
+#   executed step automatically, giving the same result with zero boilerplate.
+# - **`_Prior` dict gives clear `KeyError` messages.** A typo like
+#   `ctx.prior["λ::normlaize"]` now reports available step names.
+# - **Step-name constants.** `NORMALIZE`, `IDENTIFIERS`, etc. — rename once,
+#   fixed everywhere. A deeper fix (declarative dependencies) is future work.
+# - **`_lm_json_call` helper.** Deduplicates the repeated JSON-assemble → call
+#   → strip_fences → json.loads pattern across all three LM steps.

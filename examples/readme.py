@@ -24,8 +24,8 @@ _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 def extract_date_regex(ctx: StepContext) -> StepResult:
     """Pull an ISO-8601 date via regex."""
     if m := _ISO_RE.search(ctx.entry["text"]):
-        return StepResult(m.group(1), {"source": "regex"})
-    return StepResult(None, {"reason": "no_iso_date"}, resolved=False)
+        return StepResult(m.group(1), {"source": "regex"}, resolved=True)
+    return StepResult(None, {"reason": "no_iso_date"})
 
 
 def oai(*, messages, **kwargs):
@@ -41,15 +41,15 @@ def oai(*, messages, **kwargs):
 def extract_date_lm(ctx: StepContext, call) -> StepResult:
     """Extract a date via LLM."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
-    return StepResult(raw.strip(), {"source": "lm"}, resolved=False)
+    return StepResult(raw.strip(), {"source": "lm"})
 
 
 def validate_iso(ctx: StepContext) -> StepResult:
     """Check whether the latest extraction is a valid ISO-8601 date."""
     prev = ctx.prior.get("ψ::extract") or ctx.prior.get("λ::date")
     if prev and _ISO_RE.fullmatch(str(prev.value or "")):
-        return StepResult(prev.value, {"valid": True})
-    return StepResult(None, {"valid": False}, resolved=False)
+        return StepResult(prev.value, {"valid": True}, resolved=True)
+    return StepResult(None, {"valid": False})
 
 
 @lm(
@@ -65,7 +65,7 @@ def retry_extract(ctx: StepContext, call) -> StepResult:
     prev_value = prev.value if prev else None
     prompt = f"Text: {ctx.entry['text']}\nPrevious attempt: {prev_value}"
     raw = call(messages=[{"role": "user", "content": prompt}])
-    return StepResult(raw.strip(), {"source": "lm_retry"}, resolved=False)
+    return StepResult(raw.strip(), {"source": "lm_retry"})
 
 
 skill = Skill(
@@ -78,10 +78,6 @@ skill = Skill(
             Step("ψ::retry", retry_extract),
             name="refine",
             max_iter=3,
-            until=lambda ctx: bool(
-                ctx.prior.get("validate", StepResult(None))
-                .metadata.get("valid")
-            ),
         ),
     ],
 )
@@ -89,5 +85,5 @@ skill = Skill(
 result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
 print(f"resolved_by: {result.resolved_by}")
 print(f"value:       {result.value}")
-# resolved_by: validate
+# resolved_by: refine
 # value:       2025-01-15

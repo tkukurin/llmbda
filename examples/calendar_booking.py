@@ -4,7 +4,7 @@
 # Four regex parsers each extract a fragment; an LLM verifier cross-checks
 # them against the raw text, fills gaps, and flags ambiguity.
 #
-# - Intermediate steps return `resolved=False` and fall through.
+# - Intermediate steps fall through by default (`resolved=False`).
 # - The verifier reads `ctx.prior` (what each step found) and `ctx.steps`
 #   (each step's `description`) so it knows both the outcome and the intent.
 # - `@lm(model, system_prompt=...)` binds the model at decoration time, so
@@ -47,8 +47,8 @@ def parse_weekday(ctx: StepContext) -> StepResult:
     text = ctx.entry["text"].lower()
     for day in WEEKDAYS:
         if re.search(rf"\b{day}\b", text):
-            return StepResult(day.capitalize(), {"reason": "matched"}, resolved=False)
-    return StepResult(None, {"reason": "no_weekday"}, resolved=False)
+            return StepResult(day.capitalize(), {"reason": "matched"})
+    return StepResult(None, {"reason": "no_weekday"})
 
 
 # %%
@@ -66,12 +66,12 @@ def parse_time(ctx: StepContext) -> StepResult:
     """Find a clock time like '3pm', '15:00', or a range '9-10am'."""
     m = _TIME_RE.search(ctx.entry["text"])
     if not m:
-        return StepResult(None, {"reason": "no_time"}, resolved=False)
+        return StepResult(None, {"reason": "no_time"})
     h1, min1, h2, min2, ampm = m.groups()
     start = _fmt(int(h1), int(min1 or 0), ampm)
     end = _fmt(int(h2), int(min2 or 0), ampm) if h2 else None
     result = {"start": start, "end": end}
-    return StepResult(result, {"range": bool(end)}, resolved=False)
+    return StepResult(result, {"range": bool(end)})
 
 
 # %%
@@ -85,10 +85,10 @@ def parse_duration(ctx: StepContext) -> StepResult:
     """Find a duration phrase like '30 minutes' or '2 hrs' and return minutes."""
     m = _DUR_RE.search(ctx.entry["text"])
     if not m:
-        return StepResult(None, {"reason": "no_duration"}, resolved=False)
+        return StepResult(None, {"reason": "no_duration"})
     n, unit = float(m.group(1)), m.group(2).lower()
     minutes = int(n * 60) if unit.startswith(("hour", "hr")) else int(n)
-    return StepResult(minutes, {"reason": "matched"}, resolved=False)
+    return StepResult(minutes, {"reason": "matched"})
 
 
 # %%
@@ -99,8 +99,8 @@ def parse_topic(ctx: StepContext) -> StepResult:
     """Find a topic phrase introduced by 'about' or 're:'."""
     m = _TOPIC_RE.search(ctx.entry["text"])
     if not m:
-        return StepResult(None, {"reason": "no_topic"}, resolved=False)
-    return StepResult(m.group(1).strip(), {"reason": "matched"}, resolved=False)
+        return StepResult(None, {"reason": "no_topic"})
+    return StepResult(m.group(1).strip(), {"reason": "matched"})
 
 
 # %% [markdown]
