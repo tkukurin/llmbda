@@ -10,6 +10,7 @@ from tk.llmbda import (
     Skill,
     SkillContext,
     StepResult,
+    iter_skill,
     lm,
     run_skill,
 )
@@ -315,3 +316,91 @@ def test_nested_loops():
     skill = Skill(name="s", steps=[Skill("loop", fn=outer_loop)])
     run_skill(skill, {})
     assert outer_count["n"] == 2
+
+
+def test_orchestrator_fn_sees_children_via_ctx_skills():
+    """fn+steps orchestrator receives its declared children in ctx.skills."""
+    seen_skills: list[list[Skill]] = []
+
+    child_a = Skill("a", fn=lambda _: StepResult(value=1))
+    child_b = Skill("b", fn=lambda _: StepResult(value=2))
+
+    def orchestrator(ctx: SkillContext) -> StepResult:
+        seen_skills.append(list(ctx.skills))
+        return StepResult(value="ok")
+
+    skill = Skill(name="orch", fn=orchestrator, steps=[child_a, child_b])
+    run_skill(Skill(name="s", steps=[skill]), {})
+    assert seen_skills == [[child_a, child_b]]
+
+
+def test_orchestrator_restores_ctx_skills_on_success():
+    """After an orchestrator fn returns, ctx.skills is restored for siblings."""
+    seen_by_after: list[list[Skill]] = []
+
+    child = Skill("inner", fn=lambda _: StepResult(value=1))
+
+    def orchestrator(ctx: SkillContext) -> StepResult:
+        assert ctx.skills == [child]
+        return StepResult(value="ok")
+
+    def after(ctx: SkillContext) -> StepResult:
+        seen_by_after.append(list(ctx.skills))
+        return StepResult(value="done")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("orch", fn=orchestrator, steps=[child]),
+            Skill("after", fn=after),
+        ],
+    )
+    run_skill(skill, {})
+    leaves = seen_by_after[0]
+    names = [s.name for s in leaves]
+    assert "orch" in names
+    assert "after" in names
+
+
+def test_orchestrator_restores_ctx_skills_on_exception():
+    """If orchestrator fn raises, ctx.skills is still restored."""
+    child = Skill("inner", fn=lambda _: StepResult(value=1))
+
+    def boom(_ctx: SkillContext) -> StepResult:
+        msg = "orchestrator exploded"
+        raise RuntimeError(msg)
+
+    def after(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="after")
+
+    orch = Skill("orch", fn=boom, steps=[child])
+    after_skill = Skill("after", fn=after)
+    skill = Skill(name="s", steps=[orch, after_skill])
+
+    it = iter_skill(skill, {})
+    with pytest.raises(RuntimeError, match="orchestrator exploded"):
+        next(it)
+    # ctx.skills should have been restored despite the exception;
+    # verify by running a clean skill that would break if global state leaked
+    clean = Skill(name="clean", steps=[after_skill])
+    r = run_skill(clean, {})
+    assert r.value == "after"
+
+
+def test_leaf_fn_without_steps_sees_global_skills():
+    """A plain leaf (fn only, no steps) sees the top-level leaves list."""
+    seen_skills: list[list[str]] = []
+
+    def leaf(ctx: SkillContext) -> StepResult:
+        seen_skills.append([s.name for s in ctx.skills])
+        return StepResult(value="ok")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("a", fn=lambda _: StepResult(value=1)),
+            Skill("b", fn=leaf),
+        ],
+    )
+    run_skill(skill, {})
+    assert seen_skills == [["a", "b"]]
