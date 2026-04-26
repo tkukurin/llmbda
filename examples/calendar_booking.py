@@ -159,11 +159,11 @@ def verify(ctx: StepContext, call: LMCaller) -> StepResult:
 book_meeting = Skill(
     name="book_meeting",
     steps=[
-        Step("parse_weekday",  parse_weekday),
-        Step("parse_time",     parse_time),
-        Step("parse_duration", parse_duration),
-        Step("parse_topic",    parse_topic),
-        Step("verify",         verify),
+        Step("λ::weekday",  parse_weekday),
+        Step("λ::time",     parse_time),
+        Step("λ::duration", parse_duration),
+        Step("λ::topic",    parse_topic),
+        Step("ψ::verify",   verify),
     ],
 )
 

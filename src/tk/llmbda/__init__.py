@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tk.llmbda._version import __version__
+
 import inspect
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -143,6 +145,7 @@ def strip_fences(text: str) -> str:
 
 
 __all__ = [
+    "__version__",
     "LMCaller",
     "LMStepFn",
     "Skill",

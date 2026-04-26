@@ -115,10 +115,10 @@ def _make_skill(caller: LMCaller) -> Skill:
     return Skill(
         name="extract_cook_time",
         steps=[
-            Step("parse_minutes", parse_minutes),
-            Step("parse_hours", parse_hours),
+            Step("λ::minutes", parse_minutes),
+            Step("λ::hours", parse_hours),
             Step(
-                "llm_diagnose",
+                "ψ::diagnose",
                 lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_diagnose),
             ),
         ],
@@ -130,25 +130,25 @@ TEST_CASES = [
         "id": "T1_minutes_regex",
         "text": "Bake the cookies for 45 mins at 350 degrees.",
         "expected_val": 45,
-        "expected_resolver": "parse_minutes",
+        "expected_resolver": "λ::minutes",
     },
     {
         "id": "T2_hours_regex",
         "text": "Roast the chicken for 1.5 hours.",
         "expected_val": 90,
-        "expected_resolver": "parse_hours",
+        "expected_resolver": "λ::hours",
     },
     {
         "id": "T3_llm_semantic_math",
         "text": "Pop it in the oven for half an hour.",
         "expected_val": 30,
-        "expected_resolver": "llm_diagnose",
+        "expected_resolver": "ψ::diagnose",
     },
     {
         "id": "T4_llm_visual_cue",
         "text": "Cook until the crust is golden brown and the cheese is bubbly.",
         "expected_val": None,
-        "expected_resolver": "llm_diagnose",
+        "expected_resolver": "ψ::diagnose",
     },
 ]
 
@@ -242,7 +242,7 @@ def test_prior_steps_payload_and_system_prompt():
     run_skill(skill, {"text": "cook until bubbly"})
     payload = json.loads(captured["user"])
     names = [s["name"] for s in payload["prior_steps"]]
-    assert names == ["parse_minutes", "parse_hours"]
+    assert names == ["λ::minutes", "λ::hours"]
     assert payload["prior_steps"][0]["description"] == (
         "Find an exact minute match like '45 mins' or '30 minutes'."
     )

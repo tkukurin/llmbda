@@ -22,9 +22,8 @@ _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 
 def extract_date_regex(ctx: StepContext) -> StepResult:
-    """Try to pull an ISO-8601 date from the raw text via regex."""
-    m = _ISO_RE.search(ctx.entry["text"])
-    if m:
+    """pull an ISO-8601 date via regex."""
+    if m := _ISO_RE.search(ctx.entry["text"]):
         return StepResult(m.group(1), {"source": "regex"})
     return StepResult(None, {"reason": "no_iso_date"}, resolved=False)
 
@@ -38,13 +37,12 @@ def oai(*, messages, **kwargs):
 
 @lm(oai, system_prompt="Extract a date. Return ISO format.")
 def extract_date_lm(ctx: StepContext, call) -> StepResult:
-    """Extract a date from natural language using an LLM."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
     return StepResult(raw, {"source": "lm"}, resolved=False)
 
 
 @lm(oai, system_prompt=(
-    "You are a date verifier. You receive the original text and prior extraction "
+    "You will receive the original text and prior extraction "
     "attempts. Confirm or correct the date. Return ONLY an ISO-8601 date string."
 ))
 def verify_date(ctx: StepContext, call) -> StepResult:
@@ -62,9 +60,9 @@ def verify_date(ctx: StepContext, call) -> StepResult:
 skill = Skill(
     name="dates",
     steps=[
-        Step("extract_date_regex", extract_date_regex),
-        Step("extract_date_lm", extract_date_lm),
-        Step("verify_date", verify_date),
+        Step("λ::date", extract_date_regex),
+        Step("ψ::date", extract_date_lm),
+        Step("ψ::date.verify", verify_date),
     ],
 )
 

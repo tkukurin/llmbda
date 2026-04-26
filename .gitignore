@@ -7,5 +7,6 @@ build/
 .venv/
 *.egg
 .ruff_cache/
+_version.py
 uv.lock
 .coverage

@@ -107,9 +107,9 @@ def _make_skill(caller: LMCaller) -> Skill:
     return Skill(
         name="extract_action_item",
         steps=[
-            Step("parse_explicit_todo", parse_explicit_todo),
+            Step("λ::todo", parse_explicit_todo),
             Step(
-                "llm_extract_action",
+                "ψ::action",
                 lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_extract_action),
             ),
         ],
@@ -124,7 +124,7 @@ TEST_CASES = [
             " TODO: update the database schema @Sarah."
         ),
         "expected_val": {"task": "update the database schema", "owner": "Sarah"},
-        "expected_resolver": "parse_explicit_todo",
+        "expected_resolver": "λ::todo",
     },
     {
         "id": "T2_conversational_task",
@@ -136,7 +136,7 @@ TEST_CASES = [
             "task": "email the client by tomorrow morning",
             "owner": "Bob",
         },
-        "expected_resolver": "llm_extract_action",
+        "expected_resolver": "ψ::action",
     },
     {
         "id": "T3_no_action_item",
@@ -145,7 +145,7 @@ TEST_CASES = [
             " of progress today. See you all next week."
         ),
         "expected_val": None,
-        "expected_resolver": "llm_extract_action",
+        "expected_resolver": "ψ::action",
     },
 ]
 
@@ -220,7 +220,7 @@ def test_prior_steps_payload_and_system_prompt():
     run_skill(skill, {"transcript": "Great meeting everyone."})
     payload = json.loads(captured["user"])
     names = [s["name"] for s in payload["prior_steps"]]
-    assert names == ["parse_explicit_todo"]
+    assert names == ["λ::todo"]
     assert payload["prior_steps"][0]["description"] == (
         "Find an explicitly tagged action item of the form 'TODO: <task> @<owner>'."
     )
