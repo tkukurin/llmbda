@@ -140,6 +140,27 @@ def run_skill(skill: Skill, entry: Any) -> SkillResult:
     )
 
 
+def loop(
+    *steps: Step,
+    name: str = "loop",
+    max_iter: int = 5,
+    until: Callable[[StepContext], bool] | None = None,
+) -> Step:
+    """Repeat *steps* up to *max_iter* times, stopping early on *until* or resolved."""
+    def fn(ctx: StepContext) -> StepResult:
+        last = StepResult(value=None, resolved=False)
+        for _ in range(max_iter):
+            for step in steps:
+                last = step.fn(ctx)
+                ctx.prior[step.name] = last
+                if last.resolved:
+                    return last
+            if until and until(ctx):
+                return StepResult(value=last.value, metadata=last.metadata)
+        return StepResult(value=last.value, metadata=last.metadata, resolved=False)
+    return Step(name, fn)
+
+
 _FENCE = "```"
 
 
@@ -169,6 +190,7 @@ __all__ = [
     "__version__",
     "iter_skill",
     "lm",
+    "loop",
     "run_skill",
     "strip_fences",
 ]

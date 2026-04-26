@@ -38,8 +38,46 @@ result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
 # SkillResult(skill="dates", resolved_by="extract_date", value="2025-01-15", ...)
 ```
 
-See `examples/readme.py` for example chaining an LLM extractor, and a verifier
-that cross-checks both prior steps:
+## Loop
+
+`loop(*steps, name=..., max_iter=..., until=...)` repeats inner steps until
+`until(ctx)` returns `True`, an inner step returns `resolved=True`, or
+`max_iter` is hit. It returns a single `Step`, so it composes anywhere a
+step can go:
+
+```python
+from tk.llmbda import Skill, Step, StepContext, StepResult, loop, run_skill
+
+def draft(ctx: StepContext) -> StepResult:
+    prev = ctx.prior.get("draft")
+    v = (prev.value + 1) if prev else 1
+    return StepResult(value=v, resolved=False)
+
+def check(ctx: StepContext) -> StepResult:
+    return StepResult(value=ctx.prior["draft"].value, resolved=False)
+
+skill = Skill(
+    name="refine",
+    steps=[
+        loop(
+            Step("draft", draft),
+            Step("check", check),
+            name="refine_loop",
+            max_iter=5,
+            until=lambda ctx: ctx.prior["draft"].value >= 3,
+        ),
+    ],
+)
+result = run_skill(skill, {})
+# SkillResult(skill="refine", resolved_by="refine_loop", value=3, ...)
+```
+
+- `max_iter` exhaustion returns `resolved=False` (falls through to next step).
+- `until` satisfied or inner `resolved=True` returns `resolved=True`.
+- Inner steps update `ctx.prior` each iteration, so they see each other's latest output.
+- Loops nest: a `loop(...)` inside another `loop(...)` works as expected.
+
+See `examples/readme.py` for a loop that validates and retries LLM date extraction:
 
 ```bash
 OPENAI_API_KEY=sk-... uv run examples/readme.py
@@ -53,5 +91,6 @@ OPENAI_API_KEY=sk-... uv run examples/readme.py
 - **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, parse errors, confidence.
 - **`StepResult.resolved`** — defaults to `True`; return `resolved=False` to fall through. Execution stops after the final step regardless.
 - **`ctx.steps`, `ctx.prior`** — the plan and prior-step outcomes. Serialise both `value` and `metadata` when passing to a later LLM step.
+- **`loop(*steps, name, max_iter, until)`** — repeats inner steps, returns a single `Step`. Stops on `until(ctx)`, inner `resolved=True`, or `max_iter`. Exhaustion returns `resolved=False`.
 - **`iter_skill`** — same execution as `run_skill` but yields `(name, result)` per step for live observation or early exit.
 - **Test re-binding** — `lm(fake)(my_step.__wrapped__)` re-decorates the original fn body with a different model.
