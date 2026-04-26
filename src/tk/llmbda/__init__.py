@@ -212,6 +212,8 @@ def _check(skill: Skill, available: set[str], issues: list[str]) -> None:
             for ref in _prior_refs(skill.fn)
             if ref not in available
         )
+        if skill.steps:
+            _check(Skill(name=skill.name, steps=skill.steps), set(), issues)
         return
     current = set(available)
     for child in skill.steps:

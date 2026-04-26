@@ -132,3 +132,65 @@ def test_multiple_issues_reported():
     assert len(issues) == 2
     assert any("ghost_a" in i for i in keys)
     assert any("ghost_b" in i for i in keys)
+
+
+def test_orchestrator_children_validated_as_separate_scope():
+    """check_skill recurses into fn+steps children independently."""
+    def orchestrator(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="ok")
+
+    def bad_child(ctx: SkillContext) -> StepResult:
+        return StepResult(value=ctx.trace["nonexistent"].value)
+
+    skill = Skill(
+        name="orch",
+        fn=orchestrator,
+        steps=[Skill("bad", fn=bad_child)],
+    )
+    issues = check_skill(Skill(name="s", steps=[skill]))
+    assert any("nonexistent" in i for i in issues)
+
+
+def test_orchestrator_children_valid_refs_pass():
+    """Children that reference each other correctly produce no issues."""
+    def orchestrator(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="ok")
+
+    def first(_ctx: SkillContext) -> StepResult:
+        return StepResult(value=1)
+
+    def second(ctx: SkillContext) -> StepResult:
+        return StepResult(value=ctx.trace["first"].value)
+
+    skill = Skill(
+        name="orch",
+        fn=orchestrator,
+        steps=[Skill("first", fn=first), Skill("second", fn=second)],
+    )
+    assert check_skill(Skill(name="s", steps=[skill])) == []
+
+
+def test_orchestrator_children_cannot_see_outer_trace():
+    """Children run in a fresh scope; outer step names aren't available."""
+    def outer(_ctx: SkillContext) -> StepResult:
+        return StepResult(value=1)
+
+    def orchestrator(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="ok")
+
+    def child_refs_outer(ctx: SkillContext) -> StepResult:
+        return StepResult(value=ctx.trace["outer"].value)
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("outer", fn=outer),
+            Skill(
+                "orch",
+                fn=orchestrator,
+                steps=[Skill("child", fn=child_refs_outer)],
+            ),
+        ],
+    )
+    issues = check_skill(skill)
+    assert any("outer" in i for i in issues)
