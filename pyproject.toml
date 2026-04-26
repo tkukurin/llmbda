@@ -66,6 +66,8 @@ ignore = [
   "T20",     # allow print
   "ANN",     # annotations — we use modern | syntax
   "S101",    # allow assert in tests
+  "EM102",
+  "TRY003",
 ]
 
 [tool.ruff.lint.per-file-ignores]
