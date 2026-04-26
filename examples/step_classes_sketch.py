@@ -6,13 +6,13 @@
 #
 # | Authoring | `ctx.caller` the function sees |
 # |---|---|
-# | bare function | whatever runtime sets (step doesn't use it) |
+# | bare function | noop (step doesn't use it) |
 # | `@lm(model)` | bound caller routing to `model` |
 # | `@lm(model, system_prompt=...)` | bound caller with system prompt prepended |
 #
 # Key consequence: the model must exist before the function is decorated.
-# The function carries its own model dependency rather than receiving one
-# at `run_skill` time.
+# The function carries its own model dependency. `run_skill` doesn't
+# take a caller at all — the decorated functions already know their model.
 
 # %%
 from __future__ import annotations
@@ -41,10 +41,13 @@ class StepResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = True
 
+def _noop_caller(**_kw: Any) -> None:
+    return None
+
 @dataclass
 class StepContext:
     entry: Any
-    caller: Caller
+    caller: Caller = _noop_caller
     steps: list[Step] = field(default_factory=list)
     prior: dict[str, StepResult] = field(default_factory=dict)
 
@@ -83,11 +86,8 @@ def lm(model: LMCaller, *, system_prompt: str = "") -> Callable[[StepFn], StepFn
 # %% [markdown]
 # ## Runtime
 #
-# No branching. The decorator already handled model binding inside the
-# wrapped function. The runtime just calls `step(ctx)`.
-#
-# `caller` is still accepted here but is vestigial — decorated steps
-# route to their captured model, code steps don't call `ctx.caller`.
+# No branching, no caller parameter. The decorator already handled model
+# binding inside the wrapped function. The runtime just calls `step(ctx)`.
 
 # %%
 @dataclass
@@ -103,12 +103,11 @@ class SkillResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     trace: dict[str, StepResult] = field(default_factory=dict)
 
-def run_skill(skill: Skill, entry: Any, caller: Caller) -> SkillResult:
-    ctx = StepContext(entry=entry, caller=caller, steps=skill.steps)
+def run_skill(skill: Skill, entry: Any) -> SkillResult:
+    ctx = StepContext(entry=entry, steps=skill.steps)
     trace: dict[str, StepResult] = {}
     last_name, last_result = "(empty)", None
     for i, s in enumerate(skill.steps):
-        ctx.caller = caller
         result = s(ctx)
         trace[s.name] = result
         ctx.prior[s.name] = result
@@ -228,7 +227,7 @@ book_meeting = Skill(
 # ## Run
 
 # %%
-result = run_skill(book_meeting, {"text": "Meet Tuesday at 3pm"}, caller=fake_caller)
+result = run_skill(book_meeting, {"text": "Meet Tuesday at 3pm"})
 
 print(f"resolved_by: {result.resolved_by}")
 print(f"value:       {result.value}")
@@ -278,7 +277,7 @@ spy_skill = Skill(
         Step("verify", verify_spy),
     ],
 )
-run_skill(spy_skill, {"text": "Meet Friday at 9am"}, caller=spy_caller)
+run_skill(spy_skill, {"text": "Meet Friday at 9am"})
 
 print("\nMessages the spy caller received:")
 for i, msgs in enumerate(captured):
