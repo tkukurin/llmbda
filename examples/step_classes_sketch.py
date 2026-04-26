@@ -4,11 +4,11 @@
 # The `@lm` decorator captures both the model and an optional system prompt.
 # The runtime doesn't branch or bind — it just calls `step(ctx)`.
 #
-# | Authoring | `ctx.caller` the function sees |
+# | Authoring | How the function gets its model |
 # |---|---|
-# | bare function | noop (step doesn't use it) |
-# | `@lm(model)` | bound caller routing to `model` |
-# | `@lm(model, system_prompt=...)` | bound caller with system prompt prepended |
+# | bare function | It doesn't — pure computation |
+# | `@lm(model)` | Receives bound caller as second arg |
+# | `@lm(model, system_prompt=...)` | Same, with system prompt prepended |
 #
 # Key consequence: the model must exist before the function is decorated.
 # The function carries its own model dependency. `run_skill` doesn't
@@ -32,7 +32,6 @@ from typing import Any, Protocol
 class LMCaller(Protocol):
     def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
 
-Caller = Callable[..., Any]
 StepFn = Callable[["StepContext"], "StepResult"]
 
 @dataclass
@@ -41,13 +40,9 @@ class StepResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = True
 
-def _noop_caller(**_kw: Any) -> None:
-    return None
-
 @dataclass
 class StepContext:
     entry: Any
-    caller: Caller = _noop_caller
     steps: list[Step] = field(default_factory=list)
     prior: dict[str, StepResult] = field(default_factory=dict)
 
@@ -63,21 +58,21 @@ class Step:
     def __call__(self, ctx: StepContext) -> StepResult:
         return self.fn(ctx)
 
-def lm(model: LMCaller, *, system_prompt: str = "") -> Callable[[StepFn], StepFn]:
-    """Bind a step function to a model, optionally prepending a system prompt."""
-    def decorator(fn: StepFn) -> StepFn:
+def lm(model: LMCaller, *, system_prompt: str = "") -> Callable:
+    """Bind a step function to a model, optionally prepending a system prompt.
+
+    The inner function receives `(ctx, call)` where `call` is the bound
+    caller. The wrapper adapts it to the standard `(ctx) -> StepResult`
+    signature that `Step` expects.
+    """
+    def decorator(fn: Callable) -> StepFn:
         @wraps(fn)
         def wrapper(ctx: StepContext) -> StepResult:
-            previous = ctx.caller
             def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
                 if system_prompt:
                     messages = [{"role": "system", "content": system_prompt}, *messages]
                 return model(messages=messages, **kwargs)
-            ctx.caller = bound
-            try:
-                return fn(ctx)
-            finally:
-                ctx.caller = previous
+            return fn(ctx, bound)
         wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
         wrapper.lm_model = model  # type: ignore[attr-defined]
         return wrapper
@@ -166,9 +161,9 @@ def fake_caller(*, messages: list[dict[str, str]], **_kwargs: Any) -> str:
 # %% [markdown]
 # ## LM steps — `@lm(model)` binds the model at decoration time
 #
-# `verify` gets a system prompt prepended; `summarize` builds its own
-# messages so it passes no system prompt (but still routes through its
-# captured model, not through whatever `run_skill` provides).
+# The decorated function receives `(ctx, call)`. The wrapper adapts it
+# to the `(ctx) -> StepResult` signature that `Step` expects. No `caller`
+# on `StepContext`, no mutation, no restore.
 
 # %%
 VERIFY_PROMPT = """\
@@ -177,14 +172,14 @@ Cross-check the prior parser outputs against the raw text.
 Return JSON: {"weekday": ..., "time": ..., "notes": "..."}"""
 
 @lm(fake_caller, system_prompt=VERIFY_PROMPT)
-def verify(ctx: StepContext) -> StepResult:
+def verify(ctx: StepContext, call: LMCaller) -> StepResult:
     """Cross-check parser outputs against the raw text."""
     prior_summary = [  # system_prompt reachable via getattr(s.fn, "lm_system_prompt", "") if needed
         {"name": s.name, "description": s.description, "metadata": ctx.prior[s.name].metadata}
         for s in ctx.steps if s.name in ctx.prior
     ]
     payload = json.dumps({"text": ctx.entry["text"], "prior": prior_summary}, indent=2)
-    raw = ctx.caller(messages=[{"role": "user", "content": payload}])
+    raw = call(messages=[{"role": "user", "content": payload}])
     parsed = json.loads(raw)
     return StepResult(
         value={"weekday": parsed.get("weekday"), "time": parsed.get("time")},
@@ -193,12 +188,12 @@ def verify(ctx: StepContext) -> StepResult:
     )
 
 @lm(fake_caller)
-def summarize(ctx: StepContext) -> StepResult:
+def summarize(ctx: StepContext, call: LMCaller) -> StepResult:
     """Summarize the booking in one sentence."""
     booking = ctx.prior.get("verify")
     if not booking or not booking.value:
         return StepResult(value="Nothing to summarize.", metadata={"skipped": True})
-    raw = ctx.caller(
+    raw = call(
         messages=[
             {"role": "system", "content": "Summarize this booking in one sentence."},
             {"role": "user", "content": json.dumps(booking.value)},
