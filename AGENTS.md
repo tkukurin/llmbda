@@ -24,6 +24,14 @@
 - **Breaking changes:** append `!` to the type and add a `BREAKING CHANGE:` footer with a single-line migration note.
 - **No marketing.** Don't explain why something is "clean" or "elegant" — state what changed.
 
+## Assistant responses
+
+- **~10-line budget.** Default ceiling unless asked for depth. Prefer bullets over paragraphs.
+- **Never restate tool output.** If a tool just showed a diff, status, or test result, don't summarise it.
+- **No "summary of changes" sections.** The diff is the summary.
+- **No self-narration.** Skip "all tests pass", "working tree clean", "over to you" — state facts only when load-bearing.
+- **One proposal per turn.** If the user asks for options, list them terse; don't pre-argue.
+
 ## Testing
 
 - pytest, plain functions or classes (no unittest).

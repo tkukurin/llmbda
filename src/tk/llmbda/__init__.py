@@ -1,7 +1,4 @@
-"""tk.llmbda -- skill composition for LLMs.
-
-Like lambda calculus, but the functions talk back.
-"""
+"""tk.llmbda — skill composition for LLMs."""
 
 from __future__ import annotations
 
@@ -14,12 +11,13 @@ from typing import Any, Protocol
 
 
 class LMCaller(Protocol):
+    """OpenAI-shape caller: keyword-only messages, arbitrary kwargs."""
     def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
 
 
 @dataclass
 class StepResult:
-    """What a single step produces. ``resolved=False`` falls to the next step."""
+    """Step output. resolved=False falls through to the next step."""
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = True
@@ -29,7 +27,7 @@ class StepResult:
 class Step:
     """Named unit of work.
     description: human-readable summary; docstring fallback. Separate from
-            @lm system prompts (read those via fn.lm_system_prompt).
+        @lm system prompts (read those via fn.lm_system_prompt).
     """
     name: str
     fn: StepFn
@@ -53,14 +51,14 @@ LMStepFn = Callable[[StepContext, LMCaller], StepResult]
 
 @dataclass
 class Skill:
-    """A named sequence of steps."""
+    """Named sequence of steps."""
     name: str
     steps: list[Step] = field(default_factory=list)
 
 
 @dataclass
 class SkillResult:
-    """What a skill execution produces, with a trace of every step that ran."""
+    """Skill output with per-step trace."""
     skill: str
     resolved_by: str
     value: Any
@@ -71,11 +69,7 @@ class SkillResult:
 def lm(
     model: LMCaller, *, system_prompt: str = "",
 ) -> Callable[[LMStepFn], StepFn]:
-    """Bind a step function to a model, optionally prepending a system prompt.
-
-    The decorated function receives ``(ctx, call)`` where ``call`` forwards to
-    *model* with the system prompt (if any) prepended to ``messages``.
-    """
+    """Bind a step fn to *model*. Decorated fn is (ctx, call); call prepends system_prompt."""
     if system_prompt:
         def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
             return model(
@@ -95,10 +89,7 @@ def lm(
 
 
 def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
-    """Yield ``(step_name, result)`` for each executed step, in order.
-
-    Execution stops when a step resolves or after the final step.
-    """
+    """Yield (name, result) per step. Stops on resolved=True or after the last step."""
     steps = list(skill.steps)
     if dups := [k for k, n in Counter(s.name for s in steps).items() if n > 1]:
         raise ValueError(dups)
@@ -115,7 +106,7 @@ def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
 
 
 def run_skill(skill: Skill, entry: Any) -> SkillResult:
-    """Execute *skill* to completion and return the final ``SkillResult``."""
+    """Run *skill* to completion."""
     trace: dict[str, StepResult] = {}
     last: StepResult | None = None
     last_name = "(empty)"
@@ -138,7 +129,7 @@ _FENCE = "```"
 
 
 def strip_fences(text: str) -> str:
-    """Remove Markdown code fences from *text*, if any."""
+    """Strip surrounding markdown code fences, if any."""
     text = text.strip()
     if not text.startswith(_FENCE) or not text.endswith(_FENCE):
         return text
