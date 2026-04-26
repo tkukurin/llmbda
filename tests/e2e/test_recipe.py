@@ -10,8 +10,7 @@ import pytest
 from tk.llmbda import (
     LMCaller,
     Skill,
-    Step,
-    StepContext,
+    SkillContext,
     StepResult,
     lm,
     run_skill,
@@ -39,7 +38,7 @@ Rules:
 """
 
 
-def parse_minutes(ctx: StepContext) -> StepResult:
+def parse_minutes(ctx: SkillContext) -> StepResult:
     """Find an exact minute match like '45 mins' or '30 minutes'."""
     text = ctx.entry.get("text", "").lower()
     print(f"\n[Trace] Running Step 1: parse_minutes on '{text}'")
@@ -57,7 +56,7 @@ def parse_minutes(ctx: StepContext) -> StepResult:
     )
 
 
-def parse_hours(ctx: StepContext) -> StepResult:
+def parse_hours(ctx: SkillContext) -> StepResult:
     """Find an exact hour match like '1.5 hours' or '2 hrs' and convert to minutes."""
     text = ctx.entry.get("text", "").lower()
     print(f"[Trace] Running Step 2: parse_hours on '{text}'")
@@ -72,21 +71,21 @@ def parse_hours(ctx: StepContext) -> StepResult:
     return StepResult(value=None, metadata={"reason": "no_hour_match"})
 
 
-def _prior_steps_payload(ctx: StepContext) -> list[dict[str, object]]:
+def _prior_steps_payload(ctx: SkillContext) -> list[dict[str, object]]:
     """Serialise prior steps with their intent, value, and metadata."""
     return [
         {
             "name": s.name,
             "description": s.description,
-            "value": ctx.prior[s.name].value,
-            "metadata": ctx.prior[s.name].metadata,
+            "value": ctx.trace[s.name].value,
+            "metadata": ctx.trace[s.name].metadata,
         }
-        for s in ctx.steps
-        if s.name in ctx.prior
+        for s in ctx.skills
+        if s.name in ctx.trace
     ]
 
 
-def _llm_diagnose(ctx: StepContext, call: LMCaller) -> StepResult:
+def _llm_diagnose(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Use an LLM to semantically parse the time or diagnose the failure."""
     print("[Trace] Running Step 3: llm_diagnose (Fallback Triggered)")
     user_msg = json.dumps(
@@ -120,11 +119,11 @@ def _make_skill(caller: LMCaller) -> Skill:
     return Skill(
         name="extract_cook_time",
         steps=[
-            Step("λ::minutes", parse_minutes),
-            Step("λ::hours", parse_hours),
-            Step(
+            Skill("λ::minutes", fn=parse_minutes),
+            Skill("λ::hours", fn=parse_hours),
+            Skill(
                 "ψ::diagnose",
-                lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_diagnose),
+                fn=lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_diagnose),
             ),
         ],
     )
@@ -159,7 +158,7 @@ TEST_CASES = [
 
 
 def test_parse_minutes_found():
-    ctx = StepContext(entry={"text": "Bake for 30 mins."})
+    ctx = SkillContext(entry={"text": "Bake for 30 mins."})
     result = parse_minutes(ctx)
     assert result.value == 30
     assert result.resolved is True
@@ -167,7 +166,7 @@ def test_parse_minutes_found():
 
 
 def test_parse_minutes_missing():
-    ctx = StepContext(entry={"text": "Bake until golden."})
+    ctx = SkillContext(entry={"text": "Bake until golden."})
     result = parse_minutes(ctx)
     assert result.value is None
     assert result.resolved is False
@@ -175,21 +174,21 @@ def test_parse_minutes_missing():
 
 
 def test_parse_hours_integer():
-    ctx = StepContext(entry={"text": "Roast for 2 hours."})
+    ctx = SkillContext(entry={"text": "Roast for 2 hours."})
     result = parse_hours(ctx)
     assert result.value == 120
     assert result.resolved is True
 
 
 def test_parse_hours_decimal():
-    ctx = StepContext(entry={"text": "Roast for 1.5 hours."})
+    ctx = SkillContext(entry={"text": "Roast for 1.5 hours."})
     result = parse_hours(ctx)
     assert result.value == 90
     assert result.resolved is True
 
 
 def test_parse_hours_missing():
-    ctx = StepContext(entry={"text": "Bake for 5 minutes."})
+    ctx = SkillContext(entry={"text": "Bake for 5 minutes."})
     result = parse_hours(ctx)
     assert result.value is None
     assert result.resolved is False
@@ -199,7 +198,7 @@ def test_llm_diagnose_parses_json():
     def fake(**_kw: object) -> str:
         return '{"value": 30, "diagnosis": "half an hour = 30 min"}'
 
-    ctx = StepContext(entry={"text": "half an hour"})
+    ctx = SkillContext(entry={"text": "half an hour"})
     result = _llm_diagnose(ctx, fake)
     assert result.value == 30
     assert result.metadata["diagnosis"] == "half an hour = 30 min"
@@ -209,7 +208,7 @@ def test_llm_diagnose_strips_fences():
     def fake(**_kw: object) -> str:
         return '```json\n{"value": 15, "diagnosis": "quarter hour"}\n```'
 
-    ctx = StepContext(entry={"text": "a quarter of an hour"})
+    ctx = SkillContext(entry={"text": "a quarter of an hour"})
     result = _llm_diagnose(ctx, fake)
     assert result.value == 15
 
@@ -218,7 +217,7 @@ def test_llm_diagnose_null_value():
     def fake(**_kw: object) -> str:
         return '{"value": null, "diagnosis": "no time mentioned"}'
 
-    ctx = StepContext(entry={"text": "cook until bubbly"})
+    ctx = SkillContext(entry={"text": "cook until bubbly"})
     result = _llm_diagnose(ctx, fake)
     assert result.value is None
     assert result.metadata["diagnosis"] == "no time mentioned"
@@ -228,7 +227,7 @@ def test_llm_diagnose_parse_error():
     def fake(**_kw: object) -> str:
         return "not JSON at all"
 
-    ctx = StepContext(entry={"text": "..."})
+    ctx = SkillContext(entry={"text": "..."})
     result = _llm_diagnose(ctx, fake)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
