@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -14,74 +16,60 @@ from tk.llmbda._version import __version__
 
 class LMCaller(Protocol):
     """OpenAI-shape caller: keyword-only messages, arbitrary kwargs."""
-
     def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
 
 
 @dataclass
 class StepResult:
-    """Step output. resolved=True short-circuits the skill or breaks a loop."""
-
+    """Skill output. resolved=True short-circuits the remaining sequence."""
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = False
 
 
-ROOT = StepResult(value=None)
-"""Sentinel prev before any step has run. ``ctx.prev is ROOT`` checks for it."""
+ROOT = StepResult(value=None)  # sentinel
 
 
-class _Prior(dict):
-    """dict with informative KeyError for step lookups."""
-
+class _Trace(dict):
+    """dict with informative KeyError for skill lookups."""
     def __missing__(self, key: str):
         available = ", ".join(self) or "(none)"
-        msg = f"step {key!r} not in prior (available: {available})"
-        raise KeyError(msg)
+        raise KeyError(f"{key!r} not in trace (available: {available})")
 
 
 @dataclass
-class Step:
-    """Named unit of work.
-    description: human-readable summary; docstring fallback. Separate from
-        @lm system prompts (read those via fn.lm_system_prompt).
-    """
-
-    name: str
-    fn: StepFn
-    description: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.description:
-            self.description = inspect.getdoc(self.fn) or ""
-
-
-@dataclass
-class StepContext:
-    """Accumulator threaded through the step sequence."""
-
+class SkillContext:
+    """Accumulator threaded through the skill sequence."""
     entry: Any
-    steps: list[Step] = field(default_factory=list)
-    prior: dict[str, StepResult] = field(default_factory=_Prior)
+    skills: list[Skill] = field(default_factory=list)
+    trace: dict[str, StepResult] = field(default_factory=_Trace)
     prev: StepResult = field(default_factory=lambda: ROOT)
 
 
-StepFn = Callable[[StepContext], StepResult]
-LMStepFn = Callable[[StepContext, LMCaller], StepResult]
+SkillFn = Callable[[SkillContext], StepResult]
+LMSkillFn = Callable[[SkillContext, LMCaller], StepResult]
 
 
 @dataclass
 class Skill:
-    """Named sequence of steps."""
-
+    """Recursive composition primitive.
+    fn only: leaf step executed directly.
+    steps only: composite; runtime walks children via DFS.
+    fn + steps: fn is the orchestrator; children are declared for
+        introspection and static checks but fn controls execution.
+    """
     name: str
-    steps: list[Step] = field(default_factory=list)
+    fn: SkillFn | None = None
+    steps: list[Skill] = field(default_factory=list)
+    description: str = ""
+    def __post_init__(self) -> None:
+        if not self.description and self.fn:
+            self.description = inspect.getdoc(self.fn) or ""
 
 
 @dataclass
 class SkillResult:
     """Skill output with per-step trace."""
-
     skill: str
     resolved_by: str
     value: Any
@@ -93,10 +81,9 @@ def lm(
     model: LMCaller,
     *,
     system_prompt: str = "",
-) -> Callable[[LMStepFn], StepFn]:
-    """Bind a step fn to *model*; decorated fn is (ctx, call)."""
+) -> Callable[[LMSkillFn], SkillFn]:
+    """Bind a skill fn to *model*; decorated fn is (ctx, call)."""
     if system_prompt:
-
         def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
             return model(
                 messages=[{"role": "system", "content": system_prompt}, *messages],
@@ -105,34 +92,59 @@ def lm(
     else:
         bound = model
 
-    def decorator(fn: LMStepFn) -> StepFn:
+    def decorator(fn: LMSkillFn) -> SkillFn:
         @wraps(fn)
-        def wrapper(ctx: StepContext) -> StepResult:
+        def wrapper(ctx: SkillContext) -> StepResult:
             return fn(ctx, bound)
-
         wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
         wrapper.lm_model = model  # type: ignore[attr-defined]
         return wrapper
-
     return decorator
 
 
-def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
-    """Yield (name, result) per step. Stops on resolved=True or after the last step."""
-    steps = list(skill.steps)
-    if dups := [k for k, n in Counter(s.name for s in steps).items() if n > 1]:
-        raise ValueError(dups)
+def _leaves(skill: Skill) -> list[Skill]:
+    """Leaf skills (those with fn) via DFS."""
+    if skill.fn:
+        return [skill]
+    out: list[Skill] = []
+    for child in skill.steps:
+        out.extend(_leaves(child))
+    return out
 
-    ctx = StepContext(entry=entry, steps=steps)
-    last_idx = len(steps) - 1
-    for i, step in enumerate(steps):
-        result = step.fn(ctx)
-        ctx.prior[step.name] = result
+
+def _all_names(skill: Skill) -> list[str]:
+    """All names written to ctx.trace by this skill tree."""
+    if skill.fn:
+        return [skill.name]
+    names: list[str] = []
+    for child in skill.steps:
+        names.extend(_all_names(child))
+    return names
+
+
+def _walk(skill: Skill, ctx: SkillContext):
+    """DFS walk yielding (name, result). Returns resolved bool."""
+    if skill.fn:
+        result = skill.fn(ctx)
+        ctx.trace[skill.name] = result
         ctx.prev = result
-        should_stop = result.resolved or i == last_idx
-        yield step.name, result
-        if should_stop:
-            return
+        resolved = result.resolved
+        yield skill.name, result
+        return resolved
+    for child in skill.steps:
+        resolved = yield from _walk(child, ctx)
+        if resolved:
+            return True
+    return False
+
+
+def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
+    """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
+    names = _all_names(skill)
+    if dups := [k for k, n in Counter(names).items() if n > 1]:
+        raise ValueError(dups)
+    ctx = SkillContext(entry=entry, skills=_leaves(skill))
+    yield from _walk(skill, ctx)
 
 
 def run_skill(skill: Skill, entry: Any) -> SkillResult:
@@ -143,7 +155,6 @@ def run_skill(skill: Skill, entry: Any) -> SkillResult:
     for name, result in iter_skill(skill, entry):
         trace[name] = result
         last, last_name = result, name
-
     if last is None:
         return SkillResult(skill=skill.name, resolved_by="(empty)", value=None)
     return SkillResult(
@@ -155,29 +166,58 @@ def run_skill(skill: Skill, entry: Any) -> SkillResult:
     )
 
 
-def loop(
-    *steps: Step,
-    name: str = "loop",
-    max_iter: int = 5,
-    until: Callable[[StepContext], bool] | None = None,
-) -> Step:
-    """Repeat *steps* up to *max_iter* times.
-    Breaks early when an inner step sets resolved=True or *until* returns True.
-    The loop itself always returns resolved=False so downstream skill steps run.
-    """
-    def fn(ctx: StepContext) -> StepResult:
-        last = StepResult(value=None)
-        for _ in range(max_iter):
-            for step in steps:
-                last = step.fn(ctx)
-                ctx.prior[step.name] = last
-                ctx.prev = last
-                if last.resolved:
-                    break
-            if last.resolved or (until and until(ctx)):
-                break
-        return StepResult(value=last.value, metadata=last.metadata)
-    return Step(name, fn)
+def _prior_refs(fn: SkillFn) -> list[str]:
+    """Extract string keys from ctx.trace[...] and ctx.trace.get(...) via AST."""
+    target = getattr(fn, "__wrapped__", fn)
+    try:
+        source = textwrap.dedent(inspect.getsource(target))
+        tree = ast.parse(source)
+    except (OSError, TypeError):
+        return []
+    refs: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "trace"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            refs.append(node.slice.value)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "trace"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            refs.append(node.args[0].value)
+    return refs
+
+
+def _check(skill: Skill, available: set[str], issues: list[str]) -> None:
+    """Recursively validate trace references."""
+    if skill.fn:
+        issues.extend(
+            f"'{skill.name}' references undeclared trace key '{ref}'"
+            for ref in _prior_refs(skill.fn)
+            if ref not in available
+        )
+        return
+    current = set(available)
+    for child in skill.steps:
+        _check(child, current, issues)
+        current.update(s.name for s in _leaves(child))
+
+
+def check_skill(skill: Skill) -> list[str]:
+    """Static validation: report trace key references that can't exist at runtime."""
+    issues: list[str] = []
+    _check(skill, set(), issues)
+    return issues
 
 
 _FENCE = "```"
@@ -200,17 +240,16 @@ def strip_fences(text: str) -> str:
 __all__ = [
     "ROOT",
     "LMCaller",
-    "LMStepFn",
+    "LMSkillFn",
     "Skill",
+    "SkillContext",
+    "SkillFn",
     "SkillResult",
-    "Step",
-    "StepContext",
-    "StepFn",
     "StepResult",
     "__version__",
+    "check_skill",
     "iter_skill",
     "lm",
-    "loop",
     "run_skill",
     "strip_fences",
 ]
