@@ -127,9 +127,11 @@ def _walk(skill: Skill, ctx: SkillContext):
     if skill.fn:
         if skill.steps:
             prev_skills, ctx.skills = ctx.skills, skill.steps
-        result = skill.fn(ctx)
-        if skill.steps:
-            ctx.skills = prev_skills
+        try:
+            result = skill.fn(ctx)
+        finally:
+            if skill.steps:
+                ctx.skills = prev_skills
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved
