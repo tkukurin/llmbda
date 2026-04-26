@@ -5,7 +5,7 @@
 # them against the raw text, fills gaps, and flags ambiguity.
 #
 # - Intermediate steps fall through by default (`resolved=False`).
-# - The verifier reads `ctx.prior` (what each step found) and `ctx.steps`
+# - The verifier reads `ctx.trace` (what each step found) and `ctx.skills`
 #   (each step's `description`) so it knows both the outcome and the intent.
 # - `@lm(model, system_prompt=...)` binds the model at decoration time, so
 #   the caller must be defined first.
@@ -19,8 +19,7 @@ import re
 from tk.llmbda import (
     LMCaller,
     Skill,
-    Step,
-    StepContext,
+    SkillContext,
     StepResult,
     lm,
     run_skill,
@@ -42,7 +41,7 @@ WEEKDAYS = (
 )
 
 
-def parse_weekday(ctx: StepContext) -> StepResult:
+def parse_weekday(ctx: SkillContext) -> StepResult:
     """Find an explicit weekday name (Monday..Sunday)."""
     text = ctx.entry["text"].lower()
     for day in WEEKDAYS:
@@ -62,7 +61,7 @@ def _fmt(h: int, m: int, ampm: str | None) -> str:
     return f"{h}:{m:02d}{ampm.lower()}" if ampm else f"{h:02d}:{m:02d}"
 
 
-def parse_time(ctx: StepContext) -> StepResult:
+def parse_time(ctx: SkillContext) -> StepResult:
     """Find a clock time like '3pm', '15:00', or a range '9-10am'."""
     m = _TIME_RE.search(ctx.entry["text"])
     if not m:
@@ -81,7 +80,7 @@ _DUR_RE = re.compile(
 )
 
 
-def parse_duration(ctx: StepContext) -> StepResult:
+def parse_duration(ctx: SkillContext) -> StepResult:
     """Find a duration phrase like '30 minutes' or '2 hrs' and return minutes."""
     m = _DUR_RE.search(ctx.entry["text"])
     if not m:
@@ -95,7 +94,7 @@ def parse_duration(ctx: StepContext) -> StepResult:
 _TOPIC_RE = re.compile(r"(?:about|re:)\s+(.+?)(?:[.!?]|$)", re.IGNORECASE)
 
 
-def parse_topic(ctx: StepContext) -> StepResult:
+def parse_topic(ctx: SkillContext) -> StepResult:
     """Find a topic phrase introduced by 'about' or 're:'."""
     m = _TOPIC_RE.search(ctx.entry["text"])
     if not m:
@@ -174,21 +173,21 @@ Return ONLY JSON:
 """
 
 
-def _prior_payload(ctx: StepContext) -> list[dict[str, object]]:
+def _prior_payload(ctx: SkillContext) -> list[dict[str, object]]:
     return [
         {
             "name": s.name,
             "description": s.description,
-            "value": ctx.prior[s.name].value,
-            "metadata": ctx.prior[s.name].metadata,
+            "value": ctx.trace[s.name].value,
+            "metadata": ctx.trace[s.name].metadata,
         }
-        for s in ctx.steps
-        if s.name in ctx.prior
+        for s in ctx.skills
+        if s.name in ctx.trace
     ]
 
 
 @lm(scripted_caller, system_prompt=VERIFY_PROMPT)
-def verify(ctx: StepContext, call: LMCaller) -> StepResult:
+def verify(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Cross-check prior extractions against the raw text, produce a Booking."""
     payload = {"text": ctx.entry["text"], "prior_steps": _prior_payload(ctx)}
     try:
@@ -211,11 +210,11 @@ def verify(ctx: StepContext, call: LMCaller) -> StepResult:
 book_meeting = Skill(
     name="book_meeting",
     steps=[
-        Step("λ::weekday", parse_weekday),
-        Step("λ::time", parse_time),
-        Step("λ::duration", parse_duration),
-        Step("λ::topic", parse_topic),
-        Step("ψ::verify", verify),
+        Skill("λ::weekday", fn=parse_weekday),
+        Skill("λ::time", fn=parse_time),
+        Skill("λ::duration", fn=parse_duration),
+        Skill("λ::topic", fn=parse_topic),
+        Skill("ψ::verify", fn=verify),
     ],
 )
 

@@ -19,11 +19,9 @@ from typing import Any
 from tk.llmbda import (
     LMCaller,
     Skill,
-    Step,
-    StepContext,
+    SkillContext,
     StepResult,
     lm,
-    loop,
     run_skill,
     strip_fences,
 )
@@ -33,9 +31,7 @@ IDENTIFIERS = "λ::identifiers"
 URGENCY = "λ::urgency"
 CLASSIFY = "ψ::classify"
 DRAFT = "ψ::draft"
-VALIDATE = "λ::validate"
-REPAIR = "ψ::repair"
-REFINE = "refine_triage"
+REFINE = "ψ::refine"
 SUMMARIZE = "λ::summarize"
 
 # %% [markdown]
@@ -104,7 +100,7 @@ _ACCESS_RE = re.compile(
 )
 
 
-def normalize_ticket(ctx: StepContext) -> StepResult:
+def normalize_ticket(ctx: SkillContext) -> StepResult:
     """Normalize the support ticket into a compact text payload."""
     ticket = ctx.entry
     text = f"{ticket['subject']}\n\n{ticket['body']}"
@@ -117,9 +113,9 @@ def normalize_ticket(ctx: StepContext) -> StepResult:
     })
 
 
-def extract_identifiers(ctx: StepContext) -> StepResult:
+def extract_identifiers(ctx: SkillContext) -> StepResult:
     """Extract account, order, and email identifiers from the ticket text."""
-    text = ctx.prior[NORMALIZE].value["text"]
+    text = ctx.trace[NORMALIZE].value["text"]
     identifiers = {
         "account_ids": sorted({m.group(0).lower() for m in _ACCOUNT_RE.finditer(text)}),
         "order_ids": sorted({m.group(0).upper() for m in _ORDER_RE.finditer(text)}),
@@ -129,9 +125,9 @@ def extract_identifiers(ctx: StepContext) -> StepResult:
     return StepResult(identifiers, {"missing": missing})
 
 
-def detect_urgency(ctx: StepContext) -> StepResult:
+def detect_urgency(ctx: SkillContext) -> StepResult:
     """Detect urgency and coarse keyword features."""
-    text = ctx.prior[NORMALIZE].value["text"]
+    text = ctx.trace[NORMALIZE].value["text"]
     features = {
         "urgent": bool(_URGENT_RE.search(text)),
         "billing": bool(_BILLING_RE.search(text)),
@@ -305,12 +301,12 @@ Return ONLY JSON with intent, confidence, and signals.
 
 
 @lm(scripted_support_model, system_prompt=CLASSIFY_PROMPT)
-def classify_intent(ctx: StepContext, call: LMCaller) -> StepResult:
+def classify_intent(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Classify the customer's support intent."""
     parsed, raw = _lm_json_call(call, {
-        "ticket": ctx.prior[NORMALIZE].value,
-        "identifiers": ctx.prior[IDENTIFIERS].value,
-        "urgency": ctx.prior[URGENCY].value,
+        "ticket": ctx.trace[NORMALIZE].value,
+        "identifiers": ctx.trace[IDENTIFIERS].value,
+        "urgency": ctx.trace[URGENCY].value,
     })
     return StepResult(parsed, {"llm_raw": raw})
 
@@ -323,13 +319,13 @@ customer_reply, and internal_note.
 
 
 @lm(scripted_support_model, system_prompt=DRAFT_PROMPT)
-def draft_triage(ctx: StepContext, call: LMCaller) -> StepResult:
+def draft_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Draft a support triage decision from extracted features."""
     parsed, raw = _lm_json_call(call, {
-        "ticket": ctx.prior[NORMALIZE].value,
-        "identifiers": ctx.prior[IDENTIFIERS].value,
-        "urgency": ctx.prior[URGENCY].value,
-        "intent": ctx.prior[CLASSIFY].value,
+        "ticket": ctx.trace[NORMALIZE].value,
+        "identifiers": ctx.trace[IDENTIFIERS].value,
+        "urgency": ctx.trace[URGENCY].value,
+        "intent": ctx.trace[CLASSIFY].value,
     })
     return StepResult(parsed, {"llm_raw": raw})
 
@@ -338,23 +334,19 @@ def draft_triage(ctx: StepContext, call: LMCaller) -> StepResult:
 #
 # The loop validates the latest draft. If invalid, it asks the scripted model
 # for a repaired draft and validates again. `validate_triage` returns
-# `resolved=True` when the draft passes, which breaks the loop but does NOT
-# stop the skill — the post-loop summarize step still runs.
-#
-# `ctx.prev` tracks the most recently executed step's result, which makes
-# the old `_latest_draft` helper unnecessary:
-#
-# - First iteration: `ctx.prev` is the draft step's result.
-# - After repair: `ctx.prev` is repair's result.
-# - Second validate: `ctx.prev` is repair's result — the latest draft.
+# The refine step validates the draft against policy and, if invalid, asks the
+# scripted model for a corrected draft. It loops internally up to 2 times.
 
 # %%
-def validate_triage(ctx: StepContext) -> StepResult:
-    """Validate the latest triage draft against support policy."""
-    draft = ctx.prev.value
-    urgency = ctx.prior[URGENCY].value
-    identifiers = ctx.prior[IDENTIFIERS].value
-    issues = []
+REPAIR_PROMPT = """\
+You are a support triage repair assistant.
+Return ONLY the corrected triage JSON. Do not add commentary.
+"""
+
+
+def _validate_draft(draft: dict, urgency: dict, identifiers: dict) -> list[str]:
+    """Check a triage draft against support policy. Returns list of issues."""
+    issues: list[str] = []
     if (
         draft["intent"] == "production_incident"
         and draft["route"] != "incident_commander"
@@ -369,35 +361,35 @@ def validate_triage(ctx: StepContext) -> StepResult:
         issues.append("missing account id should be requested from customer")
     if urgency["severity"] == "sev0" and draft["priority"] != "P0":
         issues.append("sev0 must map to P0")
-    metadata = {"valid": not issues, "issues": issues}
-    return StepResult(draft, metadata, resolved=not issues)
-
-
-REPAIR_PROMPT = """\
-You are a support triage repair assistant.
-Return ONLY the corrected triage JSON. Do not add commentary.
-"""
+    return issues
 
 
 @lm(scripted_support_model, system_prompt=REPAIR_PROMPT)
-def repair_triage(ctx: StepContext, call: LMCaller) -> StepResult:
-    """Repair the latest triage draft using validation issues."""
-    parsed, raw = _lm_json_call(call, {
-        "ticket": ctx.prior[NORMALIZE].value,
-        "draft": ctx.prev.value,
-        "issues": ctx.prev.metadata["issues"],
-    })
-    return StepResult(parsed, {"llm_raw": raw})
+def refine_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
+    """Validate and repair the triage draft, looping up to 2 times."""
+    draft = ctx.prev.value
+    urgency = ctx.trace[URGENCY].value
+    identifiers = ctx.trace[IDENTIFIERS].value
+    for _ in range(2):
+        issues = _validate_draft(draft, urgency, identifiers)
+        if not issues:
+            return StepResult(draft, {"valid": True, "issues": []})
+        draft, _ = _lm_json_call(call, {
+            "ticket": ctx.trace[NORMALIZE].value,
+            "draft": draft,
+            "issues": issues,
+        })
+    issues = _validate_draft(draft, urgency, identifiers)
+    return StepResult(draft, {"valid": not issues, "issues": issues})
 
 
 # %% [markdown]
-# ## Post-loop summarize step
+# ## Post-refine summarize step
 #
-# Demonstrates that the loop does not stop the skill. This step runs after the
-# validation/repair loop completes and attaches a status field to the result.
+# Attaches a status field to the result after the refine step completes.
 
 # %%
-def summarize(ctx: StepContext) -> StepResult:
+def summarize(ctx: SkillContext) -> StepResult:
     """Attach final status based on validation outcome."""
     triage = ctx.prev.value
     valid = ctx.prev.metadata.get("valid", False)
@@ -408,18 +400,13 @@ def summarize(ctx: StepContext) -> StepResult:
 support_triage = Skill(
     name="support_triage",
     steps=[
-        Step(NORMALIZE, normalize_ticket),
-        Step(IDENTIFIERS, extract_identifiers),
-        Step(URGENCY, detect_urgency),
-        Step(CLASSIFY, classify_intent),
-        Step(DRAFT, draft_triage),
-        loop(
-            Step(VALIDATE, validate_triage),
-            Step(REPAIR, repair_triage),
-            name=REFINE,
-            max_iter=2,
-        ),
-        Step(SUMMARIZE, summarize),
+        Skill(NORMALIZE, fn=normalize_ticket),
+        Skill(IDENTIFIERS, fn=extract_identifiers),
+        Skill(URGENCY, fn=detect_urgency),
+        Skill(CLASSIFY, fn=classify_intent),
+        Skill(DRAFT, fn=draft_triage),
+        Skill(REFINE, fn=refine_triage),
+        Skill(SUMMARIZE, fn=summarize),
     ],
 )
 
@@ -456,7 +443,7 @@ for name, step_result in result.trace.items():
 #   result if present, else draft's. `ctx.prev` tracks the most recently
 #   executed step automatically, giving the same result with zero boilerplate.
 # - **`_Prior` dict gives clear `KeyError` messages.** A typo like
-#   `ctx.prior["λ::normlaize"]` now reports available step names.
+#   `ctx.trace["λ::normlaize"]` now reports available step names.
 # - **Step-name constants.** `NORMALIZE`, `IDENTIFIERS`, etc. — rename once,
 #   fixed everywhere. A deeper fix (declarative dependencies) is future work.
 # - **`_lm_json_call` helper.** Deduplicates the repeated JSON-assemble → call
