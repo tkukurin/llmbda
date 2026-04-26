@@ -125,7 +125,11 @@ def _all_names(skill: Skill) -> list[str]:
 def _walk(skill: Skill, ctx: SkillContext):
     """DFS walk yielding (name, result). Returns resolved bool."""
     if skill.fn:
+        if skill.steps:
+            prev_skills, ctx.skills = ctx.skills, skill.steps
         result = skill.fn(ctx)
+        if skill.steps:
+            ctx.skills = prev_skills
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved

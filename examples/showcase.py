@@ -232,13 +232,7 @@ def verify_date(ctx: SkillContext) -> StepResult:
 
 def retry_extract_verify(ctx: SkillContext) -> StepResult:
     """Run extract→verify up to 3 times until valid."""
-    inner = Skill(
-        name="inner",
-        steps=[
-            Skill("ψ::extract", fn=extract_date_llm),
-            Skill("ψ::verify", fn=verify_date),
-        ],
-    )
+    inner = Skill(name="inner", steps=ctx.skills)
     for attempt in range(1, 4):
         r = run_skill(inner, ctx.entry)
         if r.metadata.get("valid"):
