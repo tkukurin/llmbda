@@ -52,12 +52,12 @@ def parse_explicit_todo(ctx: StepContext) -> StepResult:
         return StepResult(
             value={"task": task.strip(), "owner": owner.strip()},
             metadata={"reason": "explicit_todo_match"},
+            resolved=True,
         )
     print("  -> Failed: No explicit TODO tag found.")
     return StepResult(
         value=None,
         metadata={"reason": "no_explicit_todo"},
-        resolved=False,
     )
 
 

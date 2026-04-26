@@ -20,11 +20,24 @@ class LMCaller(Protocol):
 
 @dataclass
 class StepResult:
-    """Step output. resolved=False falls through to the next step."""
+    """Step output. resolved=True short-circuits the skill or breaks a loop."""
 
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    resolved: bool = True
+    resolved: bool = False
+
+
+ROOT = StepResult(value=None)
+"""Sentinel prev before any step has run. ``ctx.prev is ROOT`` checks for it."""
+
+
+class _Prior(dict):
+    """dict with informative KeyError for step lookups."""
+
+    def __missing__(self, key: str):
+        available = ", ".join(self) or "(none)"
+        msg = f"step {key!r} not in prior (available: {available})"
+        raise KeyError(msg)
 
 
 @dataclass
@@ -49,7 +62,8 @@ class StepContext:
 
     entry: Any
     steps: list[Step] = field(default_factory=list)
-    prior: dict[str, StepResult] = field(default_factory=dict)
+    prior: dict[str, StepResult] = field(default_factory=_Prior)
+    prev: StepResult = field(default_factory=lambda: ROOT)
 
 
 StepFn = Callable[[StepContext], StepResult]
@@ -114,6 +128,7 @@ def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
     for i, step in enumerate(steps):
         result = step.fn(ctx)
         ctx.prior[step.name] = result
+        ctx.prev = result
         should_stop = result.resolved or i == last_idx
         yield step.name, result
         if should_stop:
@@ -146,18 +161,22 @@ def loop(
     max_iter: int = 5,
     until: Callable[[StepContext], bool] | None = None,
 ) -> Step:
-    """Repeat *steps* up to *max_iter* times, stopping early on *until* or resolved."""
+    """Repeat *steps* up to *max_iter* times.
+    Breaks early when an inner step sets resolved=True or *until* returns True.
+    The loop itself always returns resolved=False so downstream skill steps run.
+    """
     def fn(ctx: StepContext) -> StepResult:
-        last = StepResult(value=None, resolved=False)
+        last = StepResult(value=None)
         for _ in range(max_iter):
             for step in steps:
                 last = step.fn(ctx)
                 ctx.prior[step.name] = last
+                ctx.prev = last
                 if last.resolved:
-                    return last
-            if until and until(ctx):
-                return StepResult(value=last.value, metadata=last.metadata)
-        return StepResult(value=last.value, metadata=last.metadata, resolved=False)
+                    break
+            if last.resolved or (until and until(ctx)):
+                break
+        return StepResult(value=last.value, metadata=last.metadata)
     return Step(name, fn)
 
 
@@ -179,6 +198,7 @@ def strip_fences(text: str) -> str:
 
 
 __all__ = [
+    "ROOT",
     "LMCaller",
     "LMStepFn",
     "Skill",

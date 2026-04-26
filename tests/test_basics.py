@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from tk.llmbda import (
+    ROOT,
     Skill,
     SkillResult,
     Step,
@@ -28,7 +29,6 @@ def counting_step(ctx: StepContext) -> StepResult:
     return StepResult(
         value=len(ctx.prior),
         metadata={"seen": list(ctx.prior.keys())},
-        resolved=False,
     )
 
 
@@ -45,7 +45,7 @@ def test_single_step():
 
 def test_resolved_short_circuits():
     def _resolver(_ctx):
-        return StepResult(value="stopped")
+        return StepResult(value="stopped", resolved=True)
 
     def _unreachable(_ctx):
         msg = "should not be called"
@@ -78,7 +78,7 @@ def test_implicit_resolved_on_last_step():
 
 def test_prior_accumulates():
     def deposit(_ctx):
-        return StepResult(value="first", metadata={"order": 1}, resolved=False)
+        return StepResult(value="first", metadata={"order": 1})
 
     def check(ctx):
         prior_val = ctx.prior["deposit"].value
@@ -99,7 +99,7 @@ def test_duplicate_step_names_raise_before_running():
 
     def _step(_ctx):
         called.append("ran")
-        return StepResult(value=None, resolved=False)
+        return StepResult(value=None)
 
     skill = Skill(
         name="dup",
@@ -161,7 +161,7 @@ def test_iter_yields_each_step_in_order():
 
 def test_iter_stops_after_resolved():
     def _stop(_ctx):
-        return StepResult(value="done")
+        return StepResult(value="done", resolved=True)
 
     def _never(_ctx):
         msg = "should not run"
@@ -179,7 +179,7 @@ def test_iter_stop_decision_survives_result_mutation():
     called: list[str] = []
 
     def _stop(_ctx):
-        return StepResult(value="done")
+        return StepResult(value="done", resolved=True)
 
     def _never(_ctx):
         called.append("never")
@@ -245,7 +245,7 @@ def test_iter_skill_propagates_and_preserves_prior_yields():
     seen: list[str] = []
 
     def ok(_ctx):
-        return StepResult(value="ok", resolved=False)
+        return StepResult(value="ok")
 
     def boom(_ctx):
         msg = "step exploded"
@@ -350,7 +350,7 @@ def test_lm_per_step_model():
     @lm(model_a, system_prompt="prompt-a")
     def step_a(_ctx: StepContext, call: Any) -> StepResult:
         call(messages=[{"role": "user", "content": "a"}])
-        return StepResult(value=None, resolved=False)
+        return StepResult(value=None)
 
     @lm(model_b, system_prompt="prompt-b")
     def step_b(_ctx: StepContext, call: Any) -> StepResult:
@@ -422,7 +422,7 @@ def test_lm_rebinds_between_steps():
     @lm(capturing, system_prompt="prompt-a")
     def fn_a(_ctx: StepContext, call: Any) -> StepResult:
         call(messages=[{"role": "user", "content": "a"}])
-        return StepResult(value=None, resolved=False)
+        return StepResult(value=None)
 
     @lm(capturing, system_prompt="prompt-b")
     def fn_b(_ctx: StepContext, call: Any) -> StepResult:
@@ -438,3 +438,59 @@ def test_lm_rebinds_between_steps():
         [{"role": "system", "content": "prompt-a"}, {"role": "user", "content": "a"}],
         [{"role": "system", "content": "prompt-b"}, {"role": "user", "content": "b"}],
     ]
+
+
+def test_resolved_defaults_to_false():
+    r = StepResult(value=42)
+    assert r.resolved is False
+
+
+def test_prev_is_root_initially():
+    def check_root(ctx: StepContext) -> StepResult:
+        assert ctx.prev is ROOT
+        return StepResult(value="ok")
+
+    skill = Skill(name="s", steps=[Step("a", check_root)])
+    run_skill(skill, {})
+
+
+def test_prev_tracks_previous_step():
+    """ctx.prev holds the most recently executed step's result."""
+    seen_prev: list[Any] = []
+
+    def record_prev(ctx: StepContext) -> StepResult:
+        seen_prev.append(ctx.prev.value)
+        return StepResult(value=len(seen_prev))
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Step("a", record_prev),
+            Step("b", record_prev),
+            Step("c", record_prev),
+        ],
+    )
+    run_skill(skill, {})
+    assert seen_prev == [None, 1, 2]
+
+
+def test_prior_keyerror_includes_available_steps():
+    def bad_step(ctx: StepContext) -> StepResult:
+        return StepResult(value=ctx.prior["nonexistent"])
+
+    skill = Skill(
+        name="s",
+        steps=[Step("a", lambda _: StepResult(value=1)), Step("b", bad_step)],
+    )
+    with pytest.raises(KeyError, match=r"nonexistent.*available.*\ba\b"):
+        run_skill(skill, {})
+
+
+def test_prior_get_returns_none_for_missing():
+    """dict.get bypasses __missing__ and returns the default."""
+    def check_get(ctx: StepContext) -> StepResult:
+        assert ctx.prior.get("missing") is None
+        return StepResult(value="ok")
+
+    skill = Skill(name="s", steps=[Step("a", check_get)])
+    run_skill(skill, {})
