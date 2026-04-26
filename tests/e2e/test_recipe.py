@@ -50,7 +50,9 @@ def parse_minutes(ctx: StepContext) -> StepResult:
         return StepResult(value=mins, metadata={"reason": "matched_minutes"})
     print("  -> Failed: No minute regex match.")
     return StepResult(
-        value=None, metadata={"reason": "no_minute_match"}, resolved=False,
+        value=None,
+        metadata={"reason": "no_minute_match"},
+        resolved=False,
     )
 
 

@@ -311,10 +311,12 @@ def test_lm_prepends_system_prompt():
 
     skill = Skill(name="s", steps=[Step("llm", llm_step)])
     run_skill(skill, {})
-    assert seen == [[
-        {"role": "system", "content": "be terse"},
-        {"role": "user", "content": "hi"},
-    ]]
+    assert seen == [
+        [
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hi"},
+        ]
+    ]
 
 
 def test_lm_no_prompt_passes_through():
@@ -433,8 +435,6 @@ def test_lm_rebinds_between_steps():
     )
     run_skill(skill, {})
     assert captured == [
-        [{"role": "system", "content": "prompt-a"},
-         {"role": "user", "content": "a"}],
-        [{"role": "system", "content": "prompt-b"},
-         {"role": "user", "content": "b"}],
+        [{"role": "system", "content": "prompt-a"}, {"role": "user", "content": "a"}],
+        [{"role": "system", "content": "prompt-b"}, {"role": "user", "content": "b"}],
     ]

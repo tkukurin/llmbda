@@ -31,7 +31,16 @@ from tk.llmbda import (
 # ## Regex parsers
 
 # %%
-WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+WEEKDAYS = (
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+)
+
 
 def parse_weekday(ctx: StepContext) -> StepResult:
     """Find an explicit weekday name (Monday..Sunday)."""
@@ -41,14 +50,17 @@ def parse_weekday(ctx: StepContext) -> StepResult:
             return StepResult(day.capitalize(), {"reason": "matched"}, resolved=False)
     return StepResult(None, {"reason": "no_weekday"}, resolved=False)
 
+
 # %%
 _TIME_RE = re.compile(
     r"\b(\d{1,2})(?::(\d{2}))?(?:\s*-\s*(\d{1,2})(?::(\d{2}))?)?\s*(am|pm)?\b",
     re.IGNORECASE,
 )
 
+
 def _fmt(h: int, m: int, ampm: str | None) -> str:
     return f"{h}:{m:02d}{ampm.lower()}" if ampm else f"{h:02d}:{m:02d}"
+
 
 def parse_time(ctx: StepContext) -> StepResult:
     """Find a clock time like '3pm', '15:00', or a range '9-10am'."""
@@ -58,10 +70,16 @@ def parse_time(ctx: StepContext) -> StepResult:
     h1, min1, h2, min2, ampm = m.groups()
     start = _fmt(int(h1), int(min1 or 0), ampm)
     end = _fmt(int(h2), int(min2 or 0), ampm) if h2 else None
-    return StepResult({"start": start, "end": end}, {"range": bool(end)}, resolved=False)
+    result = {"start": start, "end": end}
+    return StepResult(result, {"range": bool(end)}, resolved=False)
+
 
 # %%
-_DUR_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(hour|hr|hrs|minute|min|mins)s?\b", re.IGNORECASE)
+_DUR_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(hour|hr|hrs|minute|min|mins)s?\b",
+    re.IGNORECASE,
+)
+
 
 def parse_duration(ctx: StepContext) -> StepResult:
     """Find a duration phrase like '30 minutes' or '2 hrs' and return minutes."""
@@ -72,8 +90,10 @@ def parse_duration(ctx: StepContext) -> StepResult:
     minutes = int(n * 60) if unit.startswith(("hour", "hr")) else int(n)
     return StepResult(minutes, {"reason": "matched"}, resolved=False)
 
+
 # %%
 _TOPIC_RE = re.compile(r"(?:about|re:)\s+(.+?)(?:[.!?]|$)", re.IGNORECASE)
+
 
 def parse_topic(ctx: StepContext) -> StepResult:
     """Find a topic phrase introduced by 'about' or 're:'."""
@@ -81,6 +101,7 @@ def parse_topic(ctx: StepContext) -> StepResult:
     if not m:
         return StepResult(None, {"reason": "no_topic"}, resolved=False)
     return StepResult(m.group(1).strip(), {"reason": "matched"}, resolved=False)
+
 
 # %% [markdown]
 # ## Scripted caller
@@ -91,20 +112,37 @@ def parse_topic(ctx: StepContext) -> StepResult:
 # %%
 _CANNED = {
     "Tuesday at 3pm for 30 mins": {
-        "booking": {"weekday": "Tuesday", "start": "3:00pm", "end": None,
-                    "minutes": 30, "topic": "the Q4 review"},
+        "booking": {
+            "weekday": "Tuesday",
+            "start": "3:00pm",
+            "end": None,
+            "minutes": 30,
+            "topic": "the Q4 review",
+        },
         "notes": "All prior findings confirmed against the text.",
     },
     "Friday 9-10am": {
-        "booking": {"weekday": "Friday", "start": "9:00am", "end": "10:00am",
-                    "minutes": 60, "topic": "hiring"},
+        "booking": {
+            "weekday": "Friday",
+            "start": "9:00am",
+            "end": "10:00am",
+            "minutes": 60,
+            "topic": "hiring",
+        },
         "notes": "Duration parser missed the implicit 60 min from the range.",
     },
 }
 _DEFAULT = {
-    "booking": {"weekday": None, "start": None, "end": None, "minutes": None, "topic": None},
+    "booking": {
+        "weekday": None,
+        "start": None,
+        "end": None,
+        "minutes": None,
+        "topic": None,
+    },
     "notes": "No canned response for this input.",
 }
+
 
 def scripted_caller(*, messages: list[dict[str, str]], **_kw: object) -> str:
     """Pretend to be an OpenAI caller; returns a JSON string."""
@@ -113,6 +151,7 @@ def scripted_caller(*, messages: list[dict[str, str]], **_kw: object) -> str:
         if key in user_msg:
             return json.dumps(payload)
     return json.dumps(_DEFAULT)
+
 
 # %% [markdown]
 # ## LLM verifier
@@ -134,23 +173,36 @@ Return ONLY JSON:
 }
 """
 
+
 def _prior_payload(ctx: StepContext) -> list[dict[str, object]]:
     return [
-        {"name": s.name, "description": s.description,
-         "value": ctx.prior[s.name].value, "metadata": ctx.prior[s.name].metadata}
-        for s in ctx.steps if s.name in ctx.prior
+        {
+            "name": s.name,
+            "description": s.description,
+            "value": ctx.prior[s.name].value,
+            "metadata": ctx.prior[s.name].metadata,
+        }
+        for s in ctx.steps
+        if s.name in ctx.prior
     ]
+
 
 @lm(scripted_caller, system_prompt=VERIFY_PROMPT)
 def verify(ctx: StepContext, call: LMCaller) -> StepResult:
     """Cross-check prior extractions against the raw text, produce a Booking."""
     payload = {"text": ctx.entry["text"], "prior_steps": _prior_payload(ctx)}
     try:
-        raw = call(messages=[{"role": "user", "content": json.dumps(payload, indent=2)}])
+        msg = json.dumps(payload, indent=2)
+        raw = call(messages=[{"role": "user", "content": msg}])
         parsed = json.loads(strip_fences(raw))
-        return StepResult(parsed.get("booking"), {"notes": parsed.get("notes", ""), "llm_raw": raw})
+        notes = parsed.get("notes", "")
+        return StepResult(
+            parsed.get("booking"),
+            {"notes": notes, "llm_raw": raw},
+        )
     except Exception as exc:  # noqa: BLE001
         return StepResult(None, {"reason": "llm_parse_error", "error": str(exc)})
+
 
 # %% [markdown]
 # ## Assemble and run
@@ -159,11 +211,11 @@ def verify(ctx: StepContext, call: LMCaller) -> StepResult:
 book_meeting = Skill(
     name="book_meeting",
     steps=[
-        Step("λ::weekday",  parse_weekday),
-        Step("λ::time",     parse_time),
+        Step("λ::weekday", parse_weekday),
+        Step("λ::time", parse_time),
         Step("λ::duration", parse_duration),
-        Step("λ::topic",    parse_topic),
-        Step("ψ::verify",   verify),
+        Step("λ::topic", parse_topic),
+        Step("ψ::verify", verify),
     ],
 )
 

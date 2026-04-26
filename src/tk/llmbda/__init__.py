@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from tk.llmbda._version import __version__
-
 import inspect
 from collections import Counter
 from collections.abc import Callable, Iterator
@@ -11,15 +9,19 @@ from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Protocol
 
+from tk.llmbda._version import __version__
+
 
 class LMCaller(Protocol):
     """OpenAI-shape caller: keyword-only messages, arbitrary kwargs."""
+
     def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
 
 
 @dataclass
 class StepResult:
     """Step output. resolved=False falls through to the next step."""
+
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = True
@@ -31,9 +33,11 @@ class Step:
     description: human-readable summary; docstring fallback. Separate from
         @lm system prompts (read those via fn.lm_system_prompt).
     """
+
     name: str
     fn: StepFn
     description: str = ""
+
     def __post_init__(self) -> None:
         if not self.description:
             self.description = inspect.getdoc(self.fn) or ""
@@ -42,6 +46,7 @@ class Step:
 @dataclass
 class StepContext:
     """Accumulator threaded through the step sequence."""
+
     entry: Any
     steps: list[Step] = field(default_factory=list)
     prior: dict[str, StepResult] = field(default_factory=dict)
@@ -54,6 +59,7 @@ LMStepFn = Callable[[StepContext, LMCaller], StepResult]
 @dataclass
 class Skill:
     """Named sequence of steps."""
+
     name: str
     steps: list[Step] = field(default_factory=list)
 
@@ -61,6 +67,7 @@ class Skill:
 @dataclass
 class SkillResult:
     """Skill output with per-step trace."""
+
     skill: str
     resolved_by: str
     value: Any
@@ -69,10 +76,13 @@ class SkillResult:
 
 
 def lm(
-    model: LMCaller, *, system_prompt: str = "",
+    model: LMCaller,
+    *,
+    system_prompt: str = "",
 ) -> Callable[[LMStepFn], StepFn]:
-    """Bind a step fn to *model*. Decorated fn is (ctx, call); call prepends system_prompt."""
+    """Bind a step fn to *model*; decorated fn is (ctx, call)."""
     if system_prompt:
+
         def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
             return model(
                 messages=[{"role": "system", "content": system_prompt}, *messages],
@@ -80,13 +90,16 @@ def lm(
             )
     else:
         bound = model
+
     def decorator(fn: LMStepFn) -> StepFn:
         @wraps(fn)
         def wrapper(ctx: StepContext) -> StepResult:
             return fn(ctx, bound)
+
         wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
         wrapper.lm_model = model  # type: ignore[attr-defined]
         return wrapper
+
     return decorator
 
 
@@ -145,7 +158,6 @@ def strip_fences(text: str) -> str:
 
 
 __all__ = [
-    "__version__",
     "LMCaller",
     "LMStepFn",
     "Skill",
@@ -154,6 +166,7 @@ __all__ = [
     "StepContext",
     "StepFn",
     "StepResult",
+    "__version__",
     "iter_skill",
     "lm",
     "run_skill",

@@ -55,7 +55,9 @@ def parse_explicit_todo(ctx: StepContext) -> StepResult:
         )
     print("  -> Failed: No explicit TODO tag found.")
     return StepResult(
-        value=None, metadata={"reason": "no_explicit_todo"}, resolved=False,
+        value=None,
+        metadata={"reason": "no_explicit_todo"},
+        resolved=False,
     )
 
 
@@ -120,8 +122,7 @@ TEST_CASES = [
     {
         "id": "T1_explicit_todo",
         "transcript": (
-            "Okay, so before we end."
-            " TODO: update the database schema @Sarah."
+            "Okay, so before we end. TODO: update the database schema @Sarah."
         ),
         "expected_val": {"task": "update the database schema", "owner": "Sarah"},
         "expected_resolver": "λ::todo",
@@ -129,8 +130,7 @@ TEST_CASES = [
     {
         "id": "T2_conversational_task",
         "transcript": (
-            "Alright, Bob, can you make sure to email"
-            " the client by tomorrow morning?"
+            "Alright, Bob, can you make sure to email the client by tomorrow morning?"
         ),
         "expected_val": {
             "task": "email the client by tomorrow morning",

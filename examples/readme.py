@@ -30,7 +30,9 @@ def extract_date_regex(ctx: StepContext) -> StepResult:
 
 def oai(*, messages, **kwargs):
     resp = client.chat.completions.create(
-        model="gpt-4o-mini", messages=messages, **kwargs,
+        model="gpt-4o-mini",
+        messages=messages,
+        **kwargs,
     )
     return resp.choices[0].message.content
 
@@ -41,16 +43,20 @@ def extract_date_lm(ctx: StepContext, call) -> StepResult:
     return StepResult(raw, {"source": "lm"}, resolved=False)
 
 
-@lm(oai, system_prompt=(
-    "You will receive the original text and prior extraction "
-    "attempts. Confirm or correct the date. Return ONLY an ISO-8601 date string."
-))
+@lm(
+    oai,
+    system_prompt=(
+        "You will receive the original text and prior extraction "
+        "attempts. Confirm or correct the date. Return ONLY an ISO-8601 date string."
+    ),
+)
 def verify_date(ctx: StepContext, call) -> StepResult:
     """Cross-check prior date extractions against the raw text."""
     prior_summary = "\n".join(
         f"- {s.name}: value={ctx.prior[s.name].value}, "
         f"meta={ctx.prior[s.name].metadata}"
-        for s in ctx.steps if s.name in ctx.prior
+        for s in ctx.steps
+        if s.name in ctx.prior
     )
     prompt = f"Text: {ctx.entry['text']}\n\nPrior steps:\n{prior_summary}"
     raw = call(messages=[{"role": "user", "content": prompt}])
