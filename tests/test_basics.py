@@ -554,3 +554,38 @@ def test_prior_get_returns_none_for_missing():
 
     skill = Skill(name="s", steps=[Skill("a", fn=check_get)])
     run_skill(skill, {})
+
+
+def test_raw_return_wrapped_as_step_result():
+    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: "hello")])
+    result = run_skill(skill, {})
+    assert result.value == "hello"
+    assert result.resolved_by == ("a",)
+
+
+def test_raw_return_none_wrapped():
+    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: None)])
+    result = run_skill(skill, {})
+    assert result.value is None
+    assert "a" in result.trace
+    assert isinstance(result.trace["a"], StepResult)
+
+
+def test_raw_return_in_chain_updates_prev():
+    seen: list[Any] = []
+
+    def second(ctx: SkillContext) -> StepResult:
+        seen.append(ctx.prev.value)
+        return StepResult(value="done")
+
+    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: 42), Skill("b", fn=second)])
+    run_skill(skill, {})
+    assert seen == [42]
+
+
+def test_explicit_step_result_still_works():
+    """Ensure explicit StepResult isn't double-wrapped."""
+    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: StepResult(value="x", resolved=True))])
+    result = run_skill(skill, {})
+    assert result.value == "x"
+    assert result.resolved_by == ("a",)

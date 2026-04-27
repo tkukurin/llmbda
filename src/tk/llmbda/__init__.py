@@ -70,7 +70,7 @@ class Skill:
     """
 
     name: str
-    fn: Callable[..., StepResult] | None = None
+    fn: Callable[..., Any] | None = None
     steps: list[Skill] = field(default_factory=list)
     description: str = ""
 
@@ -161,6 +161,8 @@ def _walk(skill: Skill, ctx: SkillContext):
     """DFS walk yielding (name, result). Returns resolved bool."""
     if skill.fn:
         result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
+        if not isinstance(result, StepResult):
+            result = StepResult(value=result)
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved
