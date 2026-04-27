@@ -27,14 +27,13 @@ from tk.llmbda import (
 
 
 # %%
-def greet(ctx: SkillContext) -> StepResult:
+def greet(ctx: SkillContext) -> str:
     """Greet by name."""
-    name = ctx.entry.get("name", "world")
-    return StepResult(value=f"hello, {name}")
+    return f"hello, {ctx.entry.get('name', 'world')}"
 
 
 skill_greet = Skill(name="greeter", steps=[Skill("λ::greet", fn=greet)])
-r = run_skill(skill_greet, {"name": "λ"})
+r = run_skill(skill_greet, name="λ")
 assert r.value == "hello, λ"
 assert r.resolved_by == ("λ::greet",)
 print(f"1. {r.value}")
@@ -44,19 +43,17 @@ print(f"1. {r.value}")
 
 
 # %%
-def double(ctx: SkillContext) -> StepResult:
+def double(ctx: SkillContext) -> int:
     assert ctx.prev is ROOT
-    return StepResult(value=ctx.entry["x"] * 2)
+    return ctx.entry["x"] * 2
 
 
-def add_ten(ctx: SkillContext) -> StepResult:
-    return StepResult(value=ctx.prev.value + 10)
+def add_ten(ctx: SkillContext) -> int:
+    return ctx.prev.value + 10
 
 
-def format_result(ctx: SkillContext) -> StepResult:
-    doubled = ctx.trace["λ::double"].value
-    added = ctx.prev.value
-    return StepResult(value=f"{doubled} -> {added}")
+def format_result(ctx: SkillContext) -> str:
+    return f"{ctx.trace['λ::double'].value} -> {ctx.prev.value}"
 
 
 skill_math = Skill(
@@ -67,7 +64,7 @@ skill_math = Skill(
         Skill("λ::format", fn=format_result),
     ],
 )
-r = run_skill(skill_math, {"x": 5})
+r = run_skill(skill_math, x=5)
 assert r.value == "10 -> 20"
 print(f"2. {r.value}")
 
@@ -97,11 +94,11 @@ skill_cache = Skill(
     steps=[Skill("λ::cache", fn=try_cache), Skill("λ::compute", fn=expensive_compute)],
 )
 
-r_hit = run_skill(skill_cache, {"key": "known-key"})
+r_hit = run_skill(skill_cache, key="known-key")
 assert r_hit.resolved_by == ("λ::cache",)
 assert r_hit.value == "cached-value"
 
-r_miss = run_skill(skill_cache, {"key": "other"})
+r_miss = run_skill(skill_cache, key="other")
 assert r_miss.resolved_by == ("λ::compute",)
 assert r_miss.value == "computed-fresh"
 print(f"3. hit={r_hit.resolved_by}, miss={r_miss.resolved_by}")
@@ -125,7 +122,7 @@ def extract_date(ctx: SkillContext, call) -> StepResult:
 
 
 skill_date = Skill(name="dates", steps=[Skill("ψ::extract", fn=extract_date)])
-r = run_skill(skill_date, {"text": "let's meet on the 15th of January 2025"})
+r = run_skill(skill_date, text="let's meet on the 15th of January 2025")
 assert r.value == "2025-01-15"
 print(f"4. {r.value}")
 
@@ -149,11 +146,11 @@ skill_hybrid = Skill(
     ],
 )
 
-r_regex = run_skill(skill_hybrid, {"text": "deadline is 2025-01-15"})
+r_regex = run_skill(skill_hybrid, text="deadline is 2025-01-15")
 assert r_regex.resolved_by == ("λ::regex",)
 assert r_regex.metadata["source"] == "regex"
 
-r_llm = run_skill(skill_hybrid, {"text": "the fifteenth of January 2025"})
+r_llm = run_skill(skill_hybrid, text="the fifteenth of January 2025")
 assert r_llm.resolved_by == ("ψ::llm",)
 print(f"5. regex={r_regex.resolved_by}, llm={r_llm.resolved_by}")
 
@@ -162,18 +159,17 @@ print(f"5. regex={r_regex.resolved_by}, llm={r_llm.resolved_by}")
 
 
 # %%
-def normalize(ctx: SkillContext) -> StepResult:
-    return StepResult(value=ctx.entry["text"].lower().strip())
+def normalize(ctx: SkillContext) -> str:
+    return ctx.entry["text"].lower().strip()
 
 
-def count_words(ctx: SkillContext) -> StepResult:
-    return StepResult(value=len(ctx.trace["λ::normalize"].value.split()))
+def count_words(ctx: SkillContext) -> int:
+    return len(ctx.trace["λ::normalize"].value.split())
 
 
-def tag_length(ctx: SkillContext) -> StepResult:
+def tag_length(ctx: SkillContext) -> str:
     n = ctx.trace["λ::count_words"].value
-    tag = "short" if n < 5 else "medium" if n < 15 else "long"
-    return StepResult(value=tag)
+    return "short" if n < 5 else "medium" if n < 15 else "long"
 
 
 skill_nested = Skill(
@@ -195,7 +191,7 @@ skill_nested = Skill(
     ],
 )
 
-r = run_skill(skill_nested, {"text": "  Hello World  "})
+r = run_skill(skill_nested, text="  Hello World  ")
 assert r.value == "short"
 assert r.trace["λ::normalize"].value == "hello world"
 assert r.trace["λ::count_words"].value == 2
@@ -206,7 +202,7 @@ print(f"6. tag={r.value}, words={r.trace['λ::count_words'].value}")
 
 # %%
 log: list[str] = []
-for name, result in iter_skill(skill_math, {"x": 3}):
+for name, result in iter_skill(skill_math, x=3):
     log.append(f"{name}={result.value}")
 
 assert log == ["λ::double=6", "λ::add_ten=16", "λ::format=6 -> 16"]
@@ -217,7 +213,7 @@ print(f"7. {log}")
 
 # %%
 seen = []
-for name, _result in iter_skill(skill_nested, {"text": "one two three four five six"}):
+for name, _result in iter_skill(skill_nested, text="one two three four five six"):
     seen.append(name)
     if name == "λ::count_words":
         break
@@ -285,7 +281,7 @@ skill_retry = Skill(
         Skill("λ::verify", fn=verify_date),
     ],
 )
-r = run_skill(skill_retry, {"text": "next tuesday"})
+r = run_skill(skill_retry, text="next tuesday")
 assert r.value == "2025-06-01"
 assert r.metadata["valid"] is True
 assert r.metadata["attempts"] == 2
@@ -325,7 +321,7 @@ skill_multi_model = Skill(
     name="booking",
     steps=[Skill("ψ::classify", fn=classify), Skill("ψ::confirm", fn=confirm)],
 )
-r = run_skill(skill_multi_model, {"text": "book Tuesday 3pm"})
+r = run_skill(skill_multi_model, text="book Tuesday 3pm")
 assert r.value["confirmed"] is True
 assert r.trace["ψ::classify"].value["intent"] == "booking"
 print(f"10. intent={r.trace['ψ::classify'].value['intent']}, slot={r.value['slot']}")
@@ -475,7 +471,7 @@ print(f"19. empty skill: resolved_by={r.resolved_by}")
 # ## 20. Full trace in SkillResult
 
 # %%
-r = run_skill(skill_nested, {"text": "a b c d e f g h i j k l m n o p"})
+r = run_skill(skill_nested, text="a b c d e f g h i j k l m n o p")
 assert set(r.trace) == {"λ::normalize", "λ::count_words", "λ::tag_length"}
 assert r.value == "long"
 print(f"20. trace keys: {list(r.trace)}, final={r.value}")
