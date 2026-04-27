@@ -142,9 +142,79 @@ issues = check_skill(skill)
 - Validates orchestrator children as a separate scope.
 - Checks `ctx.trace["key"]` and `ctx.trace.get("key")` patterns.
 
+## Async execution
+
+`arun_skill` and `aiter_skill` are async equivalents of `run_skill` and
+`iter_skill`. Async step functions (`async def`) are awaited automatically:
+
+```python
+import asyncio
+from tk.llmbda import Skill, SkillContext, StepResult, arun_skill
+
+async def fetch(ctx: SkillContext) -> StepResult:
+    await asyncio.sleep(0.01)  # e.g. async HTTP call
+    return StepResult(value="fetched")
+
+skill = Skill(name="s", steps=[Skill("fetch", fn=fetch)])
+result = asyncio.run(arun_skill(skill, {}))
+# result.value == "fetched"
+```
+
+The sync runner (`run_skill`) also handles async steps via `asyncio.run`,
+but cannot be called from inside a running event loop — use `arun_skill` there.
+
+## Token streaming
+
+Step functions that are generators (sync or async) yield intermediate string
+chunks before a final `StepResult`. Use `iter_skill` or `aiter_skill` to
+consume them:
+
+```python
+from tk.llmbda import Skill, SkillContext, StepResult, iter_skill
+
+def stream(ctx: SkillContext):
+    yield "chunk 1 "
+    yield "chunk 2"
+    yield StepResult(value="done")
+
+skill = Skill("s", steps=[Skill("a", fn=stream)])
+for name, item in iter_skill(skill, {}):
+    print(name, item)
+# a chunk 1
+# a chunk 2
+# a StepResult(value='done', ...)
+```
+
+`run_skill` / `arun_skill` skip string chunks and return only the final result.
+
+## Parallel steps
+
+Set `parallel=True` on a composite `Skill` to run its children concurrently
+(async) or sequentially-but-isolated (sync). Each child gets a snapshot of
+the parent trace — children see prior steps but not each other's results:
+
+```python
+from tk.llmbda import Skill, SkillContext, StepResult, run_skill
+
+def a(ctx: SkillContext) -> StepResult:
+    return StepResult(value="A")
+
+def b(ctx: SkillContext) -> StepResult:
+    return StepResult(value="B")
+
+skill = Skill("root", steps=[
+    Skill("par", parallel=True, steps=[
+        Skill("a", fn=a),
+        Skill("b", fn=b),
+    ])
+])
+result = run_skill(skill, {})
+# result.trace has both "a" and "b"
+```
+
 ## Concepts
 
-- **`Skill`** — recursive composition primitive. Leaf (`fn`), composite (`steps`), or orchestrator (`fn` + `steps`).
+- **`Skill`** — recursive composition primitive. Leaf (`fn`), composite (`steps`), or orchestrator (`fn` + `steps`). Set `parallel=True` on composites for concurrent execution.
 - **`StepResult.resolved`** — defaults to `False`; steps fall through. Set `True` to short-circuit.
 - **`StepResult.resolved_by`** — inner resolution path as `tuple[str, ...]`. Orchestrators propagate it from nested `run_skill` calls; `SkillResult.resolved_by` prepends the step name, building a hierarchical path like `("orchestrator", "inner_step")`.
 - **`ctx.prev`** — most recently executed step's `StepResult`. Starts as `ROOT` (`value=None`).
@@ -153,7 +223,8 @@ issues = check_skill(skill)
 - **`@lm(model, system_prompt=...)`** — binds model at decoration time. Decorated fn is `(ctx, call)` for leaves or `(ctx, steps, call)` for orchestrators; `call` prepends `system_prompt`.
 - **`Skill.description`** — human-readable summary; falls back to fn docstring. Separate from `@lm` system prompts (read those via `fn.lm_system_prompt`).
 - **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, confidence.
-- **`iter_skill`** — same as `run_skill` but yields `(name, result)` per step for streaming or early exit.
+- **`run_skill` / `arun_skill`** — run to completion, return `SkillResult`. Async variant for use inside event loops.
+- **`iter_skill` / `aiter_skill`** — yield `(name, str_chunk | StepResult)` per step. Enables token streaming and early exit.
 - **`check_skill`** — static validation of trace-key references. Catches typos and forward refs.
 - **Test re-binding** — `lm(fake)(my_step.__wrapped__)` re-decorates with a different model.
 

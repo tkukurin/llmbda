@@ -1,13 +1,12 @@
-from tk.llmbda import Skill, SkillContext, StepResult, run_skill, arun_skill
-import pytest
-import asyncio
+from tk.llmbda import Skill, SkillContext, StepResult
+
 
 def test_parallel_steps_inherit_trace(run):
-    def step_a(ctx: SkillContext) -> StepResult:
+    def step_a(_ctx: SkillContext) -> StepResult:
         return StepResult(value="A")
 
     def step_b(ctx: SkillContext) -> StepResult:
-        assert "a" in ctx.trace, "Trace from prior steps lost in parallel execution"
+        assert "a" in ctx.trace
         assert ctx.trace["a"].value == "A"
         return StepResult(value="B")
 

@@ -172,12 +172,13 @@ async def _awalk(skill: Skill, ctx: SkillContext):
         yield skill.name, result
         return
     if skill.parallel:
-        queue = asyncio.Queue()
-        base_trace = _Trace(ctx.trace)
-        base_prev = ctx.prev
+        queue: asyncio.Queue[tuple[str, str | StepResult] | None] = asyncio.Queue()
+        base_trace, base_prev = _Trace(ctx.trace), ctx.prev
 
         async def _run_child(child: Skill) -> None:
-            child_ctx = SkillContext(entry=ctx.entry, trace=_Trace(base_trace), prev=base_prev)
+            child_ctx = SkillContext(
+                entry=ctx.entry, trace=_Trace(base_trace), prev=base_prev,
+            )
             try:
                 async for name, item in _awalk(child, child_ctx):
                     await queue.put((name, item))
@@ -207,7 +208,9 @@ async def _awalk(skill: Skill, ctx: SkillContext):
                 return
 
 
-async def aiter_skill(skill: Skill, entry: Any) -> AsyncIterator[tuple[str, str | StepResult]]:
+async def aiter_skill(
+    skill: Skill, entry: Any,
+) -> AsyncIterator[tuple[str, str | StepResult]]:
     """Yield (name, str_chunk | StepResult) per executed skill (async)."""
     if duplicates := _duplicate_trace_names(skill):
         raise ValueError(duplicates)
@@ -252,20 +255,10 @@ async def _drain_stream(agen) -> StepResult:
 def _resolve(result: object) -> StepResult:
     """Resolve sync, async, or async-generator step return values."""
     if inspect.isasyncgen(result):
-        coro = _drain_stream(result)
-    elif inspect.isawaitable(result):
-        coro = result
-    else:
-        return result  # type: ignore
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return asyncio.run(_drain_stream(result))
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result  # type: ignore[return-value]
 
 
 def _walk(skill: Skill, ctx: SkillContext):
@@ -291,10 +284,11 @@ def _walk(skill: Skill, ctx: SkillContext):
         yield skill.name, result
         return resolved
     if skill.parallel:
-        base_trace = _Trace(ctx.trace)
-        base_prev = ctx.prev
+        base_trace, base_prev = _Trace(ctx.trace), ctx.prev
         for child in skill.steps:
-            child_ctx = SkillContext(entry=ctx.entry, trace=_Trace(base_trace), prev=base_prev)
+            child_ctx = SkillContext(
+                entry=ctx.entry, trace=_Trace(base_trace), prev=base_prev,
+            )
             for name, result in _walk(child, child_ctx):
                 if isinstance(result, StepResult):
                     ctx.trace[name] = result
@@ -308,8 +302,8 @@ def _walk(skill: Skill, ctx: SkillContext):
     return False
 
 
-def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
-    """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
+def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, str | StepResult]]:
+    """Yield (name, str_chunk | StepResult) per executed skill."""
     if duplicates := _duplicate_trace_names(skill):
         raise ValueError(duplicates)
     ctx = SkillContext(entry=entry)
@@ -321,9 +315,11 @@ def run_skill(skill: Skill, entry: Any) -> SkillResult:
     trace: dict[str, StepResult] = {}
     last: StepResult | None = None
     last_name = "(empty)"
-    for name, result in iter_skill(skill, entry):
-        trace[name] = result
-        last, last_name = result, name
+    for name, item in iter_skill(skill, entry):
+        if isinstance(item, str):
+            continue
+        trace[name] = item
+        last, last_name = item, name
     if last is None:
         return SkillResult(skill=skill.name, resolved_by=(), value=None)
     return SkillResult(

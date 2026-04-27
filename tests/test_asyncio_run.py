@@ -1,16 +1,19 @@
-from tk.llmbda import Skill, SkillContext, StepResult, run_skill
-import pytest
 import asyncio
 
-async def async_step(ctx: SkillContext) -> StepResult:
+import pytest
+
+from tk.llmbda import Skill, SkillContext, StepResult, run_skill
+
+
+async def async_step(_ctx: SkillContext) -> StepResult:
     return StepResult(value="A")
 
-def test_async_step_runs_in_sync_runner_while_in_event_loop():
+
+def test_sync_runner_raises_inside_event_loop():
     skill = Skill("a", fn=async_step)
-    
+
     async def run_in_loop():
-        # This shouldn't raise RuntimeError anymore!
-        result = run_skill(skill, "entry")
-        return result.value
-            
-    assert asyncio.run(run_in_loop()) == "A"
+        run_skill(skill, "entry")
+
+    with pytest.raises(RuntimeError, match="cannot be called"):
+        asyncio.run(run_in_loop())
