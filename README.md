@@ -182,3 +182,13 @@ uv run examples/support_triage.py
 # all 20 use cases in one file (no external deps)
 uv run examples/showcase.py
 ```
+
+## Development
+
+```bash
+# activate the pre-push hook (runs ruff + pytest before each push)
+git config core.hooksPath .githooks
+
+# skip the hook when you need to force-push a WIP
+git push --no-verify
+```
