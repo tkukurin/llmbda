@@ -71,10 +71,14 @@ class Skill:
 
     name: str
     fn: Callable[..., Any] | None = None
-    steps: list[Skill] = field(default_factory=list)
+    steps: list[Skill | Callable[..., Any]] = field(default_factory=list)
     description: str = ""
 
     def __post_init__(self) -> None:
+        self.steps = [
+            s if isinstance(s, Skill) else Skill(name=getattr(s, "__name__", str(s)), fn=s)
+            for s in self.steps
+        ]
         if not self.description and self.fn:
             self.description = inspect.getdoc(self.fn) or ""
 

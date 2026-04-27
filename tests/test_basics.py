@@ -614,3 +614,39 @@ def test_kwargs_and_positional_entry_raises():
 def test_positional_entry_still_works():
     skill = Skill(name="s", steps=[Skill("a", fn=echo_step)])
     assert run_skill(skill, {"x": 1}).value == {"x": 1}
+
+
+def test_bare_callable_auto_wrapped():
+    def my_step(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="ok")
+
+    skill = Skill(name="s", steps=[my_step])
+    assert len(skill.steps) == 1
+    assert isinstance(skill.steps[0], Skill)
+    assert skill.steps[0].name == "my_step"
+    assert run_skill(skill, {}).value == "ok"
+
+
+def test_bare_lambda_uses_lambda_name():
+    skill = Skill(name="s", steps=[lambda _: StepResult(value=1)])
+    assert skill.steps[0].name == "<lambda>"
+    assert run_skill(skill, {}).value == 1
+
+
+def test_mixed_skill_and_callable_steps():
+    def step_b(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="b")
+
+    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: StepResult(value="a")), step_b])
+    result = run_skill(skill, {})
+    assert list(result.trace) == ["a", "step_b"]
+    assert result.value == "b"
+
+
+def test_bare_callable_gets_description_from_docstring():
+    def documented(_ctx: SkillContext) -> StepResult:
+        """I have docs."""
+        return StepResult(value=None)
+
+    skill = Skill(name="s", steps=[documented])
+    assert skill.steps[0].description == "I have docs."
