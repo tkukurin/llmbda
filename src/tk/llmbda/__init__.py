@@ -124,43 +124,30 @@ def lm(
     return decorator
 
 
-def _trace_names(skill: Skill) -> list[str]:
-    """Names written to the current ctx.trace scope."""
-    if skill.fn:
-        return [skill.name]
-    return [name for child in skill.steps for name in _trace_names(child)]
+def _trace_names(s: Skill) -> list[str]:
+    return [s.name] if s.fn else [n for c in s.steps for n in _trace_names(c)]
 
 
-def _duplicate_names(names: list[str]) -> list[str]:
-    """Names that appear more than once."""
-    return [name for name, n in Counter(names).items() if n > 1]
+def _dups(names: list[str]) -> list[str]:
+    return [n for n, c in Counter(names).items() if c > 1]
 
 
-def _child_scope_duplicates(skill: Skill) -> list[str]:
-    """Duplicate names in orchestrator child trace scopes."""
+def _child_scope_dups(s: Skill) -> list[str]:
     return [
-        duplicate
-        for child in skill.steps
-        for duplicate in (
-            _duplicate_trace_names(Skill(name=child.name, steps=child.steps))
-            if child.fn and child.steps
-            else _child_scope_duplicates(child)
+        d
+        for c in s.steps
+        for d in (
+            _dup_trace_names(Skill(name=c.name, steps=c.steps))
+            if c.fn and c.steps
+            else _child_scope_dups(c)
         )
     ]
 
 
-def _duplicate_trace_names(skill: Skill) -> list[str]:
-    """Duplicate names per trace scope."""
-    child_scope = (
-        _duplicate_names(_trace_names(Skill(name=skill.name, steps=skill.steps)))
-        if skill.fn and skill.steps
-        else []
-    )
-    return [
-        *_duplicate_names(_trace_names(skill)),
-        *child_scope,
-        *_child_scope_duplicates(skill),
-    ]
+def _dup_trace_names(skill: Skill) -> list[str]:
+    inner = Skill(name=skill.name, steps=skill.steps)
+    cs = _dups(_trace_names(inner)) if skill.fn and skill.steps else []
+    return [*_dups(_trace_names(skill)), *cs, *_child_scope_dups(skill)]
 
 
 def _walk(skill: Skill, ctx: SkillContext):
@@ -169,25 +156,21 @@ def _walk(skill: Skill, ctx: SkillContext):
         result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
         if not isinstance(result, StepResult):
             result = StepResult(value=result)
-        ctx.trace[skill.name] = result
-        ctx.prev = result
+        ctx.trace[skill.name] = ctx.prev = result
         resolved = result.resolved
         yield skill.name, result
         return resolved
     for child in skill.steps:
-        resolved = yield from _walk(child, ctx)
-        if resolved:
+        if (yield from _walk(child, ctx)):
             return True
     return False
 
 
 def _make_entry(entry: Any, kwargs: dict[str, Any]) -> Any:
-    if kwargs:
-        if entry is not None:
-            msg = "pass either positional entry or kwargs, not both"
-            raise TypeError(msg)
-        return kwargs
-    return entry
+    if kwargs and entry is not None:
+        msg = "pass either positional entry or kwargs, not both"
+        raise TypeError(msg)
+    return kwargs or entry
 
 
 def iter_skill(
@@ -196,7 +179,7 @@ def iter_skill(
     **kwargs: Any,
 ) -> Iterator[tuple[str, StepResult]]:
     """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
-    if duplicates := _duplicate_trace_names(skill):
+    if duplicates := _dup_trace_names(skill):
         raise ValueError(duplicates)
     ctx = SkillContext(entry=_make_entry(entry, kwargs))
     yield from _walk(skill, ctx)
@@ -204,14 +187,9 @@ def iter_skill(
 
 def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> SkillResult:
     """Run *skill* to completion."""
-    trace: dict[str, StepResult] = {}
-    last: StepResult | None = None
-    last_name = "(empty)"
-    for name, result in iter_skill(skill, _make_entry(entry, kwargs)):
-        trace[name] = result
-        last, last_name = result, name
-    if last is None:
+    if not (trace := dict(iter_skill(skill, _make_entry(entry, kwargs)))):
         return SkillResult(skill=skill.name, resolved_by=(), value=None)
+    last_name, last = next(reversed(trace.items()))
     return SkillResult(
         skill=skill.name,
         resolved_by=(last_name, *last.resolved_by),
