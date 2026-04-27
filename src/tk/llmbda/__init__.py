@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
 from importlib.metadata import PackageNotFoundError
@@ -147,10 +148,60 @@ def _duplicate_trace_names(skill: Skill) -> list[str]:
     ]
 
 
+async def _awalk(skill: Skill, ctx: SkillContext):
+    """Async DFS walk yielding (name, result)."""
+    if skill.fn:
+        coro = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
+        result = await coro if inspect.isawaitable(coro) else coro
+        ctx.trace[skill.name] = result
+        ctx.prev = result
+        yield skill.name, result
+        return
+    for child in skill.steps:
+        async for name, result in _awalk(child, ctx):
+            resolved = result.resolved
+            yield name, result
+            if resolved:
+                return
+
+
+async def aiter_skill(skill: Skill, entry: Any) -> AsyncIterator[tuple[str, StepResult]]:
+    """Yield (name, result) per executed skill (async)."""
+    if duplicates := _duplicate_trace_names(skill):
+        raise ValueError(duplicates)
+    ctx = SkillContext(entry=entry)
+    async for item in _awalk(skill, ctx):
+        yield item
+
+
+async def arun_skill(skill: Skill, entry: Any) -> SkillResult:
+    """Run *skill* to completion (async)."""
+    trace: dict[str, StepResult] = {}
+    last: StepResult | None = None
+    last_name = "(empty)"
+    async for name, result in aiter_skill(skill, entry):
+        trace[name] = result
+        last, last_name = result, name
+    if last is None:
+        return SkillResult(skill=skill.name, resolved_by=(), value=None)
+    return SkillResult(
+        skill=skill.name,
+        resolved_by=(last_name, *last.resolved_by),
+        value=last.value,
+        metadata=last.metadata,
+        trace=trace,
+    )
+
+
+def _resolve(result: object) -> StepResult:
+    """Await coroutines returned by async step fns in the sync path."""
+    return asyncio.run(result) if inspect.isawaitable(result) else result  # type: ignore[arg-type]
+
+
 def _walk(skill: Skill, ctx: SkillContext):
     """DFS walk yielding (name, result). Returns resolved bool."""
     if skill.fn:
-        result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
+        result = _resolve(skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx))
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved
@@ -218,6 +269,8 @@ __all__ = [
     "SkillResult",
     "StepResult",
     "__version__",
+    "aiter_skill",
+    "arun_skill",
     "check_skill",
     "iter_skill",
     "lm",

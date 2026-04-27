@@ -14,8 +14,12 @@ from tk.llmbda import (
     StepResult,
     iter_skill,
     lm,
-    run_skill,
 )
+
+
+async def async_echo_step(ctx: SkillContext) -> StepResult:
+    """Async step that returns the entry as-is."""
+    return StepResult(value=ctx.entry)
 
 
 def echo_step(ctx: SkillContext) -> StepResult:
@@ -31,9 +35,9 @@ def counting_step(ctx: SkillContext) -> StepResult:
     )
 
 
-def test_single_step():
+def test_single_step(run):
     skill = Skill(name="echo", steps=[Skill("echo", fn=echo_step)])
-    result = run_skill(skill, {"x": 1})
+    result = run(skill, {"x": 1})
     assert isinstance(result, SkillResult)
     assert result.value == {"x": 1}
     assert result.skill == "echo"
@@ -42,7 +46,7 @@ def test_single_step():
     assert result.trace["echo"].value == {"x": 1}
 
 
-def test_resolved_short_circuits():
+def test_resolved_short_circuits(run):
     def _resolver(_ctx):
         return StepResult(value="stopped", resolved=True)
 
@@ -54,13 +58,13 @@ def test_resolved_short_circuits():
         name="short",
         steps=[Skill("resolver", fn=_resolver), Skill("unreachable", fn=_unreachable)],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "stopped"
     assert result.resolved_by == ("resolver",)
     assert "resolver" in result.trace
 
 
-def test_implicit_resolved_on_last_step():
+def test_implicit_resolved_on_last_step(run):
     skill = Skill(
         name="chain",
         steps=[
@@ -69,13 +73,13 @@ def test_implicit_resolved_on_last_step():
             Skill("c", fn=counting_step),
         ],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == 2  # step c sees a and b
     assert result.resolved_by == ("c",)
     assert list(result.trace) == ["a", "b", "c"]
 
 
-def test_prior_accumulates():
+def test_prior_accumulates(run):
     def deposit(_ctx):
         return StepResult(value="first", metadata={"order": 1})
 
@@ -87,13 +91,13 @@ def test_prior_accumulates():
         name="acc",
         steps=[Skill("deposit", fn=deposit), Skill("check", fn=check)],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "saw first"
     assert result.trace["deposit"].value == "first"
     assert result.trace["deposit"].metadata == {"order": 1}
 
 
-def test_duplicate_step_names_raise_before_running():
+def test_duplicate_step_names_raise_before_running(iter_collect):
     called: list[str] = []
 
     def _step(_ctx):
@@ -105,11 +109,11 @@ def test_duplicate_step_names_raise_before_running():
         steps=[Skill("same", fn=_step), Skill("same", fn=_step)],
     )
     with pytest.raises(ValueError, match="same"):
-        list(iter_skill(skill, {}))
+        iter_collect(skill, {})
     assert called == []
 
 
-def test_duplicate_outer_trace_names_raise_before_running():
+def test_duplicate_outer_trace_names_raise_before_running(iter_collect):
     called: list[str] = []
 
     def _step(_ctx):
@@ -124,11 +128,11 @@ def test_duplicate_outer_trace_names_raise_before_running():
         ],
     )
     with pytest.raises(ValueError, match="same"):
-        list(iter_skill(skill, {}))
+        iter_collect(skill, {})
     assert called == []
 
 
-def test_duplicate_orchestrator_child_names_raise_before_running():
+def test_duplicate_orchestrator_child_names_raise_before_running(iter_collect):
     called: list[str] = []
 
     def _step(_ctx):
@@ -146,11 +150,11 @@ def test_duplicate_orchestrator_child_names_raise_before_running():
         ],
     )
     with pytest.raises(ValueError, match="same"):
-        list(iter_skill(skill, {}))
+        iter_collect(skill, {})
     assert called == []
 
 
-def test_same_name_allowed_across_outer_and_orchestrator_child_scopes():
+def test_same_name_allowed_across_outer_and_orchestrator_child_scopes(run):
     def _step(_ctx):
         return StepResult(value="ok")
 
@@ -164,32 +168,32 @@ def test_same_name_allowed_across_outer_and_orchestrator_child_scopes():
             Skill("orch", fn=_orch_step, steps=[Skill("same", fn=_step)]),
         ],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.resolved_by == ("orch",)
     assert list(result.trace) == ["same", "orch"]
 
 
-def test_empty_skill():
+def test_empty_skill(run):
     skill = Skill(name="noop")
-    result = run_skill(skill, {"x": 1})
+    result = run(skill, {"x": 1})
     assert result.value is None
     assert result.skill == "noop"
     assert result.resolved_by == ()
     assert result.trace == {}
 
 
-def test_step_metadata_preserved_unchanged():
+def test_step_metadata_preserved_unchanged(run):
     def _with_meta(_ctx):
         return StepResult(value=42, metadata={"custom": "data", "extra": True})
 
     skill = Skill(name="meta", steps=[Skill("with_meta", fn=_with_meta)])
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.metadata == {"custom": "data", "extra": True}
     assert result.skill == "meta"
     assert result.resolved_by == ("with_meta",)
 
 
-def test_step_metadata_not_mutated_by_runtime():
+def test_step_metadata_not_mutated_by_runtime(run):
     """Runtime attrs live on SkillResult; step's metadata dict is untouched."""
     emitted = StepResult(value=1, metadata={"skill": "hijacked"})
 
@@ -197,14 +201,14 @@ def test_step_metadata_not_mutated_by_runtime():
         return emitted
 
     skill = Skill(name="real", steps=[Skill("clash", fn=_clashing)])
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.skill == "real"
     assert result.resolved_by == ("clash",)
     assert emitted.metadata == {"skill": "hijacked"}  # unchanged
     assert result.metadata == {"skill": "hijacked"}
 
 
-def test_iter_yields_each_step_in_order():
+def test_iter_yields_each_step_in_order(iter_collect):
     skill = Skill(
         name="chain",
         steps=[
@@ -213,12 +217,12 @@ def test_iter_yields_each_step_in_order():
             Skill("c", fn=counting_step),
         ],
     )
-    yielded = list(iter_skill(skill, {}))
+    yielded = iter_collect(skill, {})
     assert [name for name, _ in yielded] == ["a", "b", "c"]
     assert [r.value for _, r in yielded] == [0, 1, 2]
 
 
-def test_iter_stops_after_resolved():
+def test_iter_stops_after_resolved(iter_collect):
     def _stop(_ctx):
         return StepResult(value="done", resolved=True)
 
@@ -230,7 +234,7 @@ def test_iter_stops_after_resolved():
         name="s",
         steps=[Skill("stop", fn=_stop), Skill("never", fn=_never)],
     )
-    yielded = list(iter_skill(skill, {}))
+    yielded = iter_collect(skill, {})
     assert [name for name, _ in yielded] == ["stop"]
 
 
@@ -276,28 +280,28 @@ def test_iter_break_early():
     assert seen == ["a"]
 
 
-def test_iter_collects_into_dict():
+def test_iter_collects_into_dict(iter_collect):
     skill = Skill(
         name="chain",
         steps=[Skill("a", fn=counting_step), Skill("b", fn=counting_step)],
     )
-    trace = dict(iter_skill(skill, {}))
+    trace = dict(iter_collect(skill, {}))
     assert set(trace) == {"a", "b"}
     assert trace["b"].value == 1
 
 
-def test_iter_empty_skill_yields_nothing():
-    assert list(iter_skill(Skill(name="noop"), {})) == []
+def test_iter_empty_skill_yields_nothing(iter_collect):
+    assert iter_collect(Skill(name="noop"), {}) == []
 
 
-def test_run_skill_propagates_step_exception():
+def test_run_skill_propagates_step_exception(run):
     def boom(_ctx):
         msg = "step exploded"
         raise RuntimeError(msg)
 
     skill = Skill(name="err", steps=[Skill("boom", fn=boom)])
     with pytest.raises(RuntimeError, match="step exploded"):
-        run_skill(skill, {})
+        run(skill, {})
 
 
 def test_iter_skill_propagates_and_preserves_prior_yields():
@@ -356,7 +360,7 @@ def test_skill_description_from_lm_wrapped_docstring():
     assert s.description == "LLM step docs."
 
 
-def test_lm_prepends_system_prompt():
+def test_lm_prepends_system_prompt(run):
     seen: list[list[dict[str, str]]] = []
 
     def spy(*, messages: list[dict[str, str]], **_kw: Any) -> str:
@@ -369,7 +373,7 @@ def test_lm_prepends_system_prompt():
         return StepResult(value="done")
 
     skill = Skill(name="s", steps=[Skill("llm", fn=llm_step)])
-    run_skill(skill, {})
+    run(skill, {})
     assert seen == [
         [
             {"role": "system", "content": "be terse"},
@@ -378,7 +382,7 @@ def test_lm_prepends_system_prompt():
     ]
 
 
-def test_lm_no_prompt_passes_through():
+def test_lm_no_prompt_passes_through(run):
     seen: list[list[dict[str, str]]] = []
 
     def spy(*, messages: list[dict[str, str]], **_kw: Any) -> str:
@@ -391,11 +395,11 @@ def test_lm_no_prompt_passes_through():
         return StepResult(value="done")
 
     skill = Skill(name="s", steps=[Skill("llm", fn=llm_step)])
-    run_skill(skill, {})
+    run(skill, {})
     assert seen == [[{"role": "user", "content": "hi"}]]
 
 
-def test_lm_per_step_model():
+def test_lm_per_step_model(run):
     captured: list[str] = []
 
     def model_a(**_kw: Any) -> str:
@@ -417,11 +421,11 @@ def test_lm_per_step_model():
         return StepResult(value="done")
 
     skill = Skill(name="s", steps=[Skill("a", fn=step_a), Skill("b", fn=step_b)])
-    run_skill(skill, {})
+    run(skill, {})
     assert captured == ["a", "b"]
 
 
-def test_lm_step_receives_bound_caller():
+def test_lm_step_receives_bound_caller(run):
     def fake(**_kw: Any) -> str:
         return "hello back"
 
@@ -431,7 +435,7 @@ def test_lm_step_receives_bound_caller():
         return StepResult(value=raw)
 
     skill = Skill(name="chat", steps=[Skill("llm", fn=llm_step)])
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "hello back"
 
 
@@ -447,7 +451,7 @@ def test_lm_introspection_attrs():
     assert llm_step.lm_model is fake  # type: ignore[attr-defined]
 
 
-def test_lm_rewrap_for_testing():
+def test_lm_rewrap_for_testing(run):
     def original_model(**_kw: Any) -> str:
         return "original"
 
@@ -464,13 +468,13 @@ def test_lm_rewrap_for_testing():
 
     rewrapped = lm(spy_model, system_prompt="test prompt")(llm_step.__wrapped__)  # type: ignore[attr-defined]
     skill = Skill(name="s", steps=[Skill("llm", fn=rewrapped)])
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "spy"
     assert len(captured) == 1
     assert captured[0][0] == {"role": "system", "content": "test prompt"}
 
 
-def test_lm_rebinds_between_steps():
+def test_lm_rebinds_between_steps(run):
     """Each step sees a caller bound to its own model and prompt."""
     captured: list[list[dict[str, str]]] = []
 
@@ -492,7 +496,7 @@ def test_lm_rebinds_between_steps():
         name="s",
         steps=[Skill("a", fn=fn_a), Skill("b", fn=fn_b)],
     )
-    run_skill(skill, {})
+    run(skill, {})
     assert captured == [
         [{"role": "system", "content": "prompt-a"}, {"role": "user", "content": "a"}],
         [{"role": "system", "content": "prompt-b"}, {"role": "user", "content": "b"}],
@@ -504,16 +508,16 @@ def test_resolved_defaults_to_false():
     assert r.resolved is False
 
 
-def test_prev_is_root_initially():
+def test_prev_is_root_initially(run):
     def check_root(ctx: SkillContext) -> StepResult:
         assert ctx.prev is ROOT
         return StepResult(value="ok")
 
     skill = Skill(name="s", steps=[Skill("a", fn=check_root)])
-    run_skill(skill, {})
+    run(skill, {})
 
 
-def test_prev_tracks_previous_step():
+def test_prev_tracks_previous_step(run):
     """ctx.prev holds the most recently executed step's result."""
     seen_prev: list[Any] = []
 
@@ -529,11 +533,11 @@ def test_prev_tracks_previous_step():
             Skill("c", fn=record_prev),
         ],
     )
-    run_skill(skill, {})
+    run(skill, {})
     assert seen_prev == [None, 1, 2]
 
 
-def test_prior_keyerror_includes_available_steps():
+def test_prior_keyerror_includes_available_steps(run):
     def bad_step(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.trace["nonexistent"])
 
@@ -542,14 +546,38 @@ def test_prior_keyerror_includes_available_steps():
         steps=[Skill("a", fn=lambda _: StepResult(value=1)), Skill("b", fn=bad_step)],
     )
     with pytest.raises(KeyError, match=r"nonexistent.*available.*\ba\b"):
-        run_skill(skill, {})
+        run(skill, {})
 
 
-def test_prior_get_returns_none_for_missing():
+def test_prior_get_returns_none_for_missing(run):
     """dict.get bypasses __missing__ and returns the default."""
     def check_get(ctx: SkillContext) -> StepResult:
         assert ctx.trace.get("missing") is None
         return StepResult(value="ok")
 
     skill = Skill(name="s", steps=[Skill("a", fn=check_get)])
-    run_skill(skill, {})
+    run(skill, {})
+
+
+def test_async_step_fn(run):
+    """Native async def step works through both sync and async paths."""
+    skill = Skill(name="s", steps=[Skill("echo", fn=async_echo_step)])
+    result = run(skill, {"x": 42})
+    assert result.value == {"x": 42}
+    assert result.resolved_by == ("echo",)
+
+
+def test_async_step_with_prev(run):
+    """Async step can read ctx.prev set by a prior sync step."""
+    def sync_first(_ctx: SkillContext) -> StepResult:
+        return StepResult(value=10)
+
+    async def async_second(ctx: SkillContext) -> StepResult:
+        return StepResult(value=ctx.prev.value + 1)
+
+    skill = Skill(
+        name="s",
+        steps=[Skill("a", fn=sync_first), Skill("b", fn=async_second)],
+    )
+    result = run(skill, {})
+    assert result.value == 11

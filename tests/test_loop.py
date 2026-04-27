@@ -9,7 +9,7 @@ import pytest
 from tk.llmbda import Skill, SkillContext, StepResult, iter_skill, run_skill
 
 
-def test_loop_leaf_result_visible_in_trace():
+def test_loop_leaf_result_visible_in_trace(run):
     def loop_fn(_ctx: SkillContext) -> StepResult:
         value = None
         for i in range(3):
@@ -26,12 +26,12 @@ def test_loop_leaf_result_visible_in_trace():
             Skill("after", fn=after),
         ],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "after:2"
     assert result.trace["loop"].value == 2
 
 
-def test_loop_leaf_can_absorb_internal_resolution():
+def test_loop_leaf_can_absorb_internal_resolution(run):
     def loop_fn(_ctx: SkillContext) -> StepResult:
         for i in range(3):
             if i == 1:
@@ -48,12 +48,12 @@ def test_loop_leaf_can_absorb_internal_resolution():
             Skill("after", fn=after),
         ],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "after:done"
     assert result.resolved_by == ("after",)
 
 
-def test_loop_leaf_resolved_short_circuits_sequence():
+def test_loop_leaf_resolved_short_circuits_sequence(run):
     def loop_fn(_ctx: SkillContext) -> StepResult:
         return StepResult(value="done", resolved=True)
 
@@ -68,12 +68,12 @@ def test_loop_leaf_resolved_short_circuits_sequence():
             Skill("after", fn=unreachable),
         ],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "done"
     assert result.resolved_by == ("loop",)
 
 
-def test_loop_leaf_gets_ctx_entry_and_prev():
+def test_loop_leaf_gets_ctx_entry_and_prev(run):
     seen_prev: list[Any] = []
 
     def setup(_ctx: SkillContext) -> StepResult:
@@ -93,12 +93,12 @@ def test_loop_leaf_gets_ctx_entry_and_prev():
             Skill("loop", fn=loop_fn),
         ],
     )
-    result = run_skill(skill, {"items": [1, 2, 3]})
+    result = run(skill, {"items": [1, 2, 3]})
     assert result.value == 16
     assert seen_prev == [10]
 
 
-def test_orchestrator_fn_receives_children_as_steps_arg():
+def test_orchestrator_fn_receives_children_as_steps_arg(run):
     seen_steps: list[list[Skill]] = []
 
     child_a = Skill("a", fn=lambda _: StepResult(value=1))
@@ -109,11 +109,11 @@ def test_orchestrator_fn_receives_children_as_steps_arg():
         return StepResult(value="ok")
 
     skill = Skill(name="orch", fn=orchestrator, steps=[child_a, child_b])
-    run_skill(Skill(name="s", steps=[skill]), {})
+    run(Skill(name="s", steps=[skill]), {})
     assert seen_steps == [[child_a, child_b]]
 
 
-def test_orchestrator_steps_arg_does_not_leak_to_later_leaf():
+def test_orchestrator_steps_arg_does_not_leak_to_later_leaf(run):
     """A leaf after an orchestrator has no access to the orchestrator's children."""
     after_called = []
 
@@ -135,7 +135,7 @@ def test_orchestrator_steps_arg_does_not_leak_to_later_leaf():
             Skill("after", fn=after),
         ],
     )
-    run_skill(skill, {})
+    run(skill, {})
     assert after_called == [True]
 
 
@@ -166,6 +166,7 @@ def test_orchestrator_exception_does_not_corrupt_context():
 
 
 def test_orchestrator_can_run_children_via_run_skill():
+    """Sync orchestrator calls run_skill internally — sync-only (nested event loop)."""
     def orchestrator(ctx: SkillContext, steps: list[Skill]) -> StepResult:
         inner = Skill(name="inner", steps=steps)
         r = run_skill(inner, ctx.entry)
@@ -184,7 +185,7 @@ def test_orchestrator_can_run_children_via_run_skill():
     assert result.trace["orch"].metadata["ran"] == ["a", "b"]
 
 
-def test_orchestrator_shares_outer_trace():
+def test_orchestrator_shares_outer_trace(run):
     """Orchestrator receives the same ctx, so it can read prior trace entries."""
     def setup(_ctx: SkillContext) -> StepResult:
         return StepResult(value="setup_value")
@@ -203,5 +204,5 @@ def test_orchestrator_shares_outer_trace():
             ),
         ],
     )
-    result = run_skill(skill, {})
+    result = run(skill, {})
     assert result.value == "saw:setup_value"
