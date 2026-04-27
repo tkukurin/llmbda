@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from tk.llmbda import (
     SkillContext,
     SkillResult,
     StepResult,
+    aiter_skill,
     iter_skill,
     lm,
 )
@@ -581,3 +583,82 @@ def test_async_step_with_prev(run):
     )
     result = run(skill, {})
     assert result.value == 11
+
+
+def test_streaming_step_yields_chunks_then_result():
+    """Async generator step yields str chunks followed by a StepResult."""
+    async def streaming(ctx: SkillContext) -> StepResult:
+        for word in ctx.entry["text"].split():
+            yield word
+        yield StepResult(value=ctx.entry["text"].upper())
+
+    skill = Skill(name="s", steps=[Skill("stream", fn=streaming)])
+    collected = asyncio.run(_acollect(skill, {"text": "hello world"}))
+    assert collected == [
+        ("stream", "hello"),
+        ("stream", "world"),
+        ("stream", StepResult(value="HELLO WORLD")),
+    ]
+
+
+def test_streaming_step_result_in_trace(run):
+    """The final StepResult from a streaming step lands in the trace."""
+    async def streaming(_ctx: SkillContext) -> StepResult:
+        yield "chunk"
+        yield StepResult(value="final")
+
+    def after(ctx: SkillContext) -> StepResult:
+        return StepResult(value=f"after:{ctx.trace['stream'].value}")
+
+    skill = Skill(name="s", steps=[Skill("stream", fn=streaming), Skill("after", fn=after)])
+    result = run(skill, {})
+    assert result.value == "after:final"
+    assert result.trace["stream"].value == "final"
+
+
+def test_streaming_step_prev_tracks(run):
+    """ctx.prev is set to the StepResult from a streaming step."""
+    async def streaming(_ctx: SkillContext) -> StepResult:
+        yield "a"
+        yield StepResult(value=42)
+
+    def check_prev(ctx: SkillContext) -> StepResult:
+        return StepResult(value=ctx.prev.value + 1)
+
+    skill = Skill(name="s", steps=[Skill("stream", fn=streaming), Skill("check", fn=check_prev)])
+    result = run(skill, {})
+    assert result.value == 43
+
+
+def test_streaming_step_missing_step_result_raises():
+    """Async generator that never yields a StepResult raises TypeError."""
+    async def bad(_ctx: SkillContext) -> StepResult:
+        yield "chunk"
+
+    skill = Skill(name="s", steps=[Skill("bad", fn=bad)])
+    with pytest.raises(TypeError, match="streaming step must yield a final StepResult"):
+        asyncio.run(_arun(skill, {}))
+
+
+def test_streaming_step_resolved_short_circuits(run):
+    """A streaming step with resolved=True stops remaining steps."""
+    async def streaming(_ctx: SkillContext) -> StepResult:
+        yield "working..."
+        yield StepResult(value="done", resolved=True)
+
+    def unreachable(_ctx: SkillContext) -> StepResult:
+        raise AssertionError("should not run")
+
+    skill = Skill(name="s", steps=[Skill("stream", fn=streaming), Skill("never", fn=unreachable)])
+    result = run(skill, {})
+    assert result.value == "done"
+    assert result.resolved_by == ("stream",)
+
+
+async def _acollect(skill, entry):
+    return [item async for item in aiter_skill(skill, entry)]
+
+
+async def _arun(skill, entry):
+    from tk.llmbda import arun_skill
+    return await arun_skill(skill, entry)

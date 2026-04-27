@@ -149,24 +149,36 @@ def _duplicate_trace_names(skill: Skill) -> list[str]:
 
 
 async def _awalk(skill: Skill, ctx: SkillContext):
-    """Async DFS walk yielding (name, result)."""
+    """Async DFS walk yielding (name, str | StepResult)."""
     if skill.fn:
         coro = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
-        result = await coro if inspect.isawaitable(coro) else coro
+        if inspect.isasyncgen(coro):
+            result = None
+            async for item in coro:
+                if isinstance(item, StepResult):
+                    result = item
+                else:
+                    yield skill.name, item
+            if result is None:
+                msg = f"{skill.name}: streaming step must yield a final StepResult"
+                raise TypeError(msg)
+        elif inspect.isawaitable(coro):
+            result = await coro
+        else:
+            result = coro
         ctx.trace[skill.name] = result
         ctx.prev = result
         yield skill.name, result
         return
     for child in skill.steps:
-        async for name, result in _awalk(child, ctx):
-            resolved = result.resolved
-            yield name, result
-            if resolved:
+        async for name, item in _awalk(child, ctx):
+            yield name, item
+            if isinstance(item, StepResult) and item.resolved:
                 return
 
 
-async def aiter_skill(skill: Skill, entry: Any) -> AsyncIterator[tuple[str, StepResult]]:
-    """Yield (name, result) per executed skill (async)."""
+async def aiter_skill(skill: Skill, entry: Any) -> AsyncIterator[tuple[str, str | StepResult]]:
+    """Yield (name, str_chunk | StepResult) per executed skill (async)."""
     if duplicates := _duplicate_trace_names(skill):
         raise ValueError(duplicates)
     ctx = SkillContext(entry=entry)
@@ -179,9 +191,11 @@ async def arun_skill(skill: Skill, entry: Any) -> SkillResult:
     trace: dict[str, StepResult] = {}
     last: StepResult | None = None
     last_name = "(empty)"
-    async for name, result in aiter_skill(skill, entry):
-        trace[name] = result
-        last, last_name = result, name
+    async for name, item in aiter_skill(skill, entry):
+        if isinstance(item, str):
+            continue
+        trace[name] = item
+        last, last_name = item, name
     if last is None:
         return SkillResult(skill=skill.name, resolved_by=(), value=None)
     return SkillResult(
@@ -193,8 +207,22 @@ async def arun_skill(skill: Skill, entry: Any) -> SkillResult:
     )
 
 
+async def _drain_stream(agen) -> StepResult:
+    """Consume an async generator, return the final StepResult."""
+    final = None
+    async for item in agen:
+        if isinstance(item, StepResult):
+            final = item
+    if final is None:
+        msg = "streaming step must yield a final StepResult"
+        raise TypeError(msg)
+    return final
+
+
 def _resolve(result: object) -> StepResult:
-    """Await coroutines returned by async step fns in the sync path."""
+    """Resolve sync, async, or async-generator step return values."""
+    if inspect.isasyncgen(result):
+        return asyncio.run(_drain_stream(result))
     return asyncio.run(result) if inspect.isawaitable(result) else result  # type: ignore[arg-type]
 
 
