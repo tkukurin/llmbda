@@ -47,7 +47,9 @@ def parse_minutes(ctx: SkillContext) -> StepResult:
         mins = int(match.group(1))
         print(f"  -> Success: Found {mins} minutes.")
         return StepResult(
-            value=mins, metadata={"reason": "matched_minutes"}, resolved=True,
+            value=mins,
+            metadata={"reason": "matched_minutes"},
+            resolved=True,
         )
     print("  -> Failed: No minute regex match.")
     return StepResult(
@@ -65,7 +67,9 @@ def parse_hours(ctx: SkillContext) -> StepResult:
         mins = int(float(match.group(1)) * 60)
         print(f"  -> Success: Found hours, converted to {mins} minutes.")
         return StepResult(
-            value=mins, metadata={"reason": "matched_hours"}, resolved=True,
+            value=mins,
+            metadata={"reason": "matched_hours"},
+            resolved=True,
         )
     print("  -> Failed: No hour regex match.")
     return StepResult(value=None, metadata={"reason": "no_hour_match"})

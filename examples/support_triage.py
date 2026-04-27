@@ -104,13 +104,15 @@ def normalize_ticket(ctx: SkillContext) -> StepResult:
     """Normalize the support ticket into a compact text payload."""
     ticket = ctx.entry
     text = f"{ticket['subject']}\n\n{ticket['body']}"
-    return StepResult({
-        "id": ticket["id"],
-        "channel": ticket["channel"],
-        "customer_tier": ticket["customer_tier"],
-        "subject": ticket["subject"].strip(),
-        "text": re.sub(r"\s+", " ", text).strip(),
-    })
+    return StepResult(
+        {
+            "id": ticket["id"],
+            "channel": ticket["channel"],
+            "customer_tier": ticket["customer_tier"],
+            "subject": ticket["subject"].strip(),
+            "text": re.sub(r"\s+", " ", text).strip(),
+        }
+    )
 
 
 def extract_identifiers(ctx: SkillContext) -> StepResult:
@@ -159,6 +161,7 @@ def detect_urgency(ctx: SkillContext) -> StepResult:
 # The model is deterministic so this notebook is runnable without credentials.
 # It inspects the bound system prompt to decide which role it is playing.
 
+
 # %%
 def _lm_json_call(call: LMCaller, payload: dict[str, Any]) -> tuple[Any, str]:
     """Send a JSON payload to the caller, return (parsed_response, raw_string)."""
@@ -196,8 +199,7 @@ def _classify_intent(payload: dict[str, Any]) -> dict[str, Any]:
     elif any(word in text for word in ["outage", "503", "production", "down"]):
         intent = "production_incident"
     elif any(
-        word in text
-        for word in ["password", "reset", "access", "login", "log in"]
+        word in text for word in ["password", "reset", "access", "login", "log in"]
     ):
         intent = "account_access"
     else:
@@ -290,6 +292,7 @@ def _customer_reply(intent: str, missing_info: list[str]) -> str:
         return reply
     return "Thanks for contacting support. We will review and follow up."
 
+
 # %% [markdown]
 # ## LLM-style classification and drafting steps
 
@@ -303,11 +306,14 @@ Return ONLY JSON with intent, confidence, and signals.
 @lm(scripted_support_model, system_prompt=CLASSIFY_PROMPT)
 def classify_intent(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Classify the customer's support intent."""
-    parsed, raw = _lm_json_call(call, {
-        "ticket": ctx.trace[NORMALIZE].value,
-        "identifiers": ctx.trace[IDENTIFIERS].value,
-        "urgency": ctx.trace[URGENCY].value,
-    })
+    parsed, raw = _lm_json_call(
+        call,
+        {
+            "ticket": ctx.trace[NORMALIZE].value,
+            "identifiers": ctx.trace[IDENTIFIERS].value,
+            "urgency": ctx.trace[URGENCY].value,
+        },
+    )
     return StepResult(parsed, {"llm_raw": raw})
 
 
@@ -321,13 +327,17 @@ customer_reply, and internal_note.
 @lm(scripted_support_model, system_prompt=DRAFT_PROMPT)
 def draft_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Draft a support triage decision from extracted features."""
-    parsed, raw = _lm_json_call(call, {
-        "ticket": ctx.trace[NORMALIZE].value,
-        "identifiers": ctx.trace[IDENTIFIERS].value,
-        "urgency": ctx.trace[URGENCY].value,
-        "intent": ctx.trace[CLASSIFY].value,
-    })
+    parsed, raw = _lm_json_call(
+        call,
+        {
+            "ticket": ctx.trace[NORMALIZE].value,
+            "identifiers": ctx.trace[IDENTIFIERS].value,
+            "urgency": ctx.trace[URGENCY].value,
+            "intent": ctx.trace[CLASSIFY].value,
+        },
+    )
     return StepResult(parsed, {"llm_raw": raw})
+
 
 # %% [markdown]
 # ## Policy validation and repair loop
@@ -374,11 +384,14 @@ def refine_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
         issues = _validate_draft(draft, urgency, identifiers)
         if not issues:
             return StepResult(draft, {"valid": True, "issues": []})
-        draft, _ = _lm_json_call(call, {
-            "ticket": ctx.trace[NORMALIZE].value,
-            "draft": draft,
-            "issues": issues,
-        })
+        draft, _ = _lm_json_call(
+            call,
+            {
+                "ticket": ctx.trace[NORMALIZE].value,
+                "draft": draft,
+                "issues": issues,
+            },
+        )
     issues = _validate_draft(draft, urgency, identifiers)
     return StepResult(draft, {"valid": not issues, "issues": issues})
 
@@ -387,6 +400,7 @@ def refine_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
 # ## Post-refine summarize step
 #
 # Attaches a status field to the result after the refine step completes.
+
 
 # %%
 def summarize(ctx: SkillContext) -> StepResult:

@@ -68,9 +68,14 @@ def test_nested_composite_sees_prior():
     def second(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.trace["first"].value + 1)
 
-    skill = Skill(name="s", steps=[
-        Skill("group", steps=[Skill("first", fn=first), Skill("second", fn=second)]),
-    ])
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill(
+                "group", steps=[Skill("first", fn=first), Skill("second", fn=second)]
+            ),
+        ],
+    )
     assert check_skill(skill) == []
 
 
@@ -81,10 +86,13 @@ def test_nested_composite_later_group_sees_earlier():
     def b(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.trace["a"].value)
 
-    skill = Skill(name="s", steps=[
-        Skill("g1", steps=[Skill("a", fn=a)]),
-        Skill("g2", steps=[Skill("b", fn=b)]),
-    ])
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("g1", steps=[Skill("a", fn=a)]),
+            Skill("g2", steps=[Skill("b", fn=b)]),
+        ],
+    )
     assert check_skill(skill) == []
 
 
@@ -136,6 +144,7 @@ def test_multiple_issues_reported():
 
 def test_orchestrator_children_validated_as_separate_scope():
     """check_skill recurses into fn+steps children independently."""
+
     def orchestrator(_ctx: SkillContext) -> StepResult:
         return StepResult(value="ok")
 
@@ -153,6 +162,7 @@ def test_orchestrator_children_validated_as_separate_scope():
 
 def test_orchestrator_children_valid_refs_pass():
     """Children that reference each other correctly produce no issues."""
+
     def orchestrator(_ctx: SkillContext) -> StepResult:
         return StepResult(value="ok")
 
@@ -172,6 +182,7 @@ def test_orchestrator_children_valid_refs_pass():
 
 def test_orchestrator_children_cannot_see_outer_trace():
     """Children run in a fresh scope; outer step names aren't available."""
+
     def outer(_ctx: SkillContext) -> StepResult:
         return StepResult(value=1)
 
