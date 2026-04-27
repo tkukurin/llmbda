@@ -30,6 +30,7 @@ class StepResult:
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = False
+    resolved_by: tuple[str, ...] = ()
 
 
 ROOT = StepResult(value=None)  # sentinel
@@ -76,7 +77,7 @@ class Skill:
 class SkillResult:
     """Skill output with per-step trace."""
     skill: str
-    resolved_by: str
+    resolved_by: tuple[str, ...]
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     trace: dict[str, StepResult] = field(default_factory=dict)
@@ -179,10 +180,10 @@ def run_skill(skill: Skill, entry: Any) -> SkillResult:
         trace[name] = result
         last, last_name = result, name
     if last is None:
-        return SkillResult(skill=skill.name, resolved_by="(empty)", value=None)
+        return SkillResult(skill=skill.name, resolved_by=(), value=None)
     return SkillResult(
         skill=skill.name,
-        resolved_by=last_name,
+        resolved_by=(last_name, *last.resolved_by),
         value=last.value,
         metadata=last.metadata,
         trace=trace,

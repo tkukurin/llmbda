@@ -50,7 +50,7 @@ def test_loop_leaf_can_absorb_internal_resolution():
     )
     result = run_skill(skill, {})
     assert result.value == "after:done"
-    assert result.resolved_by == "after"
+    assert result.resolved_by == ("after",)
 
 
 def test_loop_leaf_resolved_short_circuits_sequence():
@@ -70,7 +70,7 @@ def test_loop_leaf_resolved_short_circuits_sequence():
     )
     result = run_skill(skill, {})
     assert result.value == "done"
-    assert result.resolved_by == "loop"
+    assert result.resolved_by == ("loop",)
 
 
 def test_loop_leaf_gets_ctx_entry_and_prev():

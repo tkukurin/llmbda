@@ -76,51 +76,46 @@ def _prior_steps_payload(
     ]
 
 
-def _make_extract_fn(prior: list[Skill]):
-    """Build an extract-action function closed over *prior* siblings."""
-    def _llm_extract_action(ctx: SkillContext, call: LMCaller) -> StepResult:
-        """Infer the most important action item and owner from a transcript."""
-        print("[Trace] Running llm_extract_action (Fallback Triggered)")
-        user_msg = json.dumps(
-            {
-                "transcript": ctx.entry.get("transcript", ""),
-                "prior_steps": _prior_steps_payload(ctx.trace, prior),
-            },
-            indent=2,
+def _llm_extract_action(
+    ctx: SkillContext, steps: list[Skill], call: LMCaller,
+) -> StepResult:
+    """Run parser children, then infer the action item via LLM on fallback."""
+    inner = Skill(name="_parse", steps=steps)
+    r = run_skill(inner, ctx.entry)
+    if any(sr.resolved for sr in r.trace.values()):
+        return StepResult(value=r.value, metadata=r.metadata, resolved_by=r.resolved_by)
+    print("[Trace] Running llm_extract_action (Fallback Triggered)")
+    user_msg = json.dumps(
+        {
+            "transcript": ctx.entry.get("transcript", ""),
+            "prior_steps": _prior_steps_payload(r.trace, steps),
+        },
+        indent=2,
+    )
+    print(f"  -> Prompting LLM with prior context:\n{user_msg}")
+    try:
+        raw_response = call(
+            messages=[{"role": "user", "content": user_msg}],
         )
-        print(f"  -> Prompting LLM with prior context:\n{user_msg}")
-        try:
-            raw_response = call(
-                messages=[{"role": "user", "content": user_msg}],
-            )
-            print(f"  -> LLM Raw Response: {raw_response}")
-            parsed = json.loads(strip_fences(raw_response))
-            return StepResult(
-                value=parsed if parsed.get("task") else None,
-                metadata={"llm_raw": raw_response},
-            )
-        except Exception as exc:  # noqa: BLE001  -- step must survive any caller/parse failure
-            print(f"  -> LLM Error: {exc}")
-            return StepResult(
-                value=None,
-                metadata={"reason": "llm_parse_error", "error": str(exc)},
-            )
-    return _llm_extract_action
+        print(f"  -> LLM Raw Response: {raw_response}")
+        parsed = json.loads(strip_fences(raw_response))
+        return StepResult(
+            value=parsed if parsed.get("task") else None,
+            metadata={"llm_raw": raw_response},
+        )
+    except Exception as exc:  # noqa: BLE001  -- step must survive any caller/parse failure
+        print(f"  -> LLM Error: {exc}")
+        return StepResult(
+            value=None,
+            metadata={"reason": "llm_parse_error", "error": str(exc)},
+        )
 
 
 def _make_skill(caller: LMCaller) -> Skill:
-    prior = [Skill("λ::todo", fn=parse_explicit_todo)]
     return Skill(
         name="extract_action_item",
-        steps=[
-            *prior,
-            Skill(
-                "ψ::action",
-                fn=lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(
-                    _make_extract_fn(prior),
-                ),
-            ),
-        ],
+        fn=lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_extract_action),
+        steps=[Skill("λ::todo", fn=parse_explicit_todo)],
     )
 
 
@@ -131,7 +126,7 @@ TEST_CASES = [
             "Okay, so before we end. TODO: update the database schema @Sarah."
         ),
         "expected_val": {"task": "update the database schema", "owner": "Sarah"},
-        "expected_resolver": "λ::todo",
+        "expected_resolver": ("extract_action_item", "λ::todo"),
     },
     {
         "id": "T2_conversational_task",
@@ -142,7 +137,7 @@ TEST_CASES = [
             "task": "email the client by tomorrow morning",
             "owner": "Bob",
         },
-        "expected_resolver": "ψ::action",
+        "expected_resolver": ("extract_action_item",),
     },
     {
         "id": "T3_no_action_item",
@@ -151,7 +146,7 @@ TEST_CASES = [
             " of progress today. See you all next week."
         ),
         "expected_val": None,
-        "expected_resolver": "ψ::action",
+        "expected_resolver": ("extract_action_item",),
     },
 ]
 
@@ -180,9 +175,8 @@ def test_llm_extract_action_parses():
     def fake(**_kw: object) -> str:
         return '{"task": "email the client", "owner": "Bob"}'
 
-    extract = _make_extract_fn([])
     ctx = SkillContext(entry={"transcript": "Bob, email the client tomorrow."})
-    result = extract(ctx, fake)
+    result = _llm_extract_action(ctx, [], fake)
     assert result.value == {"task": "email the client", "owner": "Bob"}
 
 
@@ -190,9 +184,8 @@ def test_llm_extract_action_strips_fences():
     def fake(**_kw: object) -> str:
         return '```json\n{"task": "review PR", "owner": "Carol"}\n```'
 
-    extract = _make_extract_fn([])
     ctx = SkillContext(entry={"transcript": "Carol, PR review please."})
-    result = extract(ctx, fake)
+    result = _llm_extract_action(ctx, [], fake)
     assert result.value == {"task": "review PR", "owner": "Carol"}
 
 
@@ -200,9 +193,8 @@ def test_llm_extract_action_null_when_no_task():
     def fake(**_kw: object) -> str:
         return '{"task": null, "owner": null}'
 
-    extract = _make_extract_fn([])
     ctx = SkillContext(entry={"transcript": "Nice catching up."})
-    result = extract(ctx, fake)
+    result = _llm_extract_action(ctx, [], fake)
     assert result.value is None
 
 
@@ -210,9 +202,8 @@ def test_llm_extract_action_parse_error():
     def fake(**_kw: object) -> str:
         return "not JSON"
 
-    extract = _make_extract_fn([])
     ctx = SkillContext(entry={"transcript": "..."})
-    result = extract(ctx, fake)
+    result = _llm_extract_action(ctx, [], fake)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
 

@@ -37,7 +37,7 @@ def test_single_step():
     assert isinstance(result, SkillResult)
     assert result.value == {"x": 1}
     assert result.skill == "echo"
-    assert result.resolved_by == "echo"
+    assert result.resolved_by == ("echo",)
     assert "echo" in result.trace
     assert result.trace["echo"].value == {"x": 1}
 
@@ -56,7 +56,7 @@ def test_resolved_short_circuits():
     )
     result = run_skill(skill, {})
     assert result.value == "stopped"
-    assert result.resolved_by == "resolver"
+    assert result.resolved_by == ("resolver",)
     assert "resolver" in result.trace
 
 
@@ -71,7 +71,7 @@ def test_implicit_resolved_on_last_step():
     )
     result = run_skill(skill, {})
     assert result.value == 2  # step c sees a and b
-    assert result.resolved_by == "c"
+    assert result.resolved_by == ("c",)
     assert list(result.trace) == ["a", "b", "c"]
 
 
@@ -165,7 +165,7 @@ def test_same_name_allowed_across_outer_and_orchestrator_child_scopes():
         ],
     )
     result = run_skill(skill, {})
-    assert result.resolved_by == "orch"
+    assert result.resolved_by == ("orch",)
     assert list(result.trace) == ["same", "orch"]
 
 
@@ -174,7 +174,7 @@ def test_empty_skill():
     result = run_skill(skill, {"x": 1})
     assert result.value is None
     assert result.skill == "noop"
-    assert result.resolved_by == "(empty)"
+    assert result.resolved_by == ()
     assert result.trace == {}
 
 
@@ -186,7 +186,7 @@ def test_step_metadata_preserved_unchanged():
     result = run_skill(skill, {})
     assert result.metadata == {"custom": "data", "extra": True}
     assert result.skill == "meta"
-    assert result.resolved_by == "with_meta"
+    assert result.resolved_by == ("with_meta",)
 
 
 def test_step_metadata_not_mutated_by_runtime():
@@ -199,7 +199,7 @@ def test_step_metadata_not_mutated_by_runtime():
     skill = Skill(name="real", steps=[Skill("clash", fn=_clashing)])
     result = run_skill(skill, {})
     assert result.skill == "real"
-    assert result.resolved_by == "clash"
+    assert result.resolved_by == ("clash",)
     assert emitted.metadata == {"skill": "hijacked"}  # unchanged
     assert result.metadata == {"skill": "hijacked"}
 

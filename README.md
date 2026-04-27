@@ -14,7 +14,7 @@ def greet(ctx: SkillContext) -> StepResult:
 
 skill = Skill(name="greeter", steps=[Skill("greet", fn=greet)])
 result = run_skill(skill, {"name": "λ"})
-# SkillResult(skill="greeter", resolved_by="greet", value="hello, λ", ...)
+# SkillResult(skill="greeter", resolved_by=("greet",), value="hello, λ", ...)
 ```
 
 ## LLM skill
@@ -35,7 +35,7 @@ def extract_date(ctx: SkillContext, call) -> StepResult:
 
 skill = Skill(name="dates", steps=[Skill("extract", fn=extract_date)])
 result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
-# SkillResult(skill="dates", resolved_by="extract", value="2025-01-15", ...)
+# SkillResult(skill="dates", resolved_by=("extract",), value="2025-01-15", ...)
 ```
 
 ## Multi-step with `ctx.prev`
@@ -110,8 +110,8 @@ def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
     for attempt in range(1, 4):
         r = run_skill(inner, ctx.entry)
         if r.metadata.get("valid"):
-            return StepResult(value=r.value, metadata={"attempts": attempt})
-    return StepResult(value=r.value, metadata={"valid": False})
+            return StepResult(value=r.value, metadata={"attempts": attempt}, resolved_by=r.resolved_by)
+    return StepResult(value=r.value, metadata={"valid": False}, resolved_by=r.resolved_by)
 
 skill = Skill(
     name="retry",
@@ -146,6 +146,7 @@ issues = check_skill(skill)
 
 - **`Skill`** — recursive composition primitive. Leaf (`fn`), composite (`steps`), or orchestrator (`fn` + `steps`).
 - **`StepResult.resolved`** — defaults to `False`; steps fall through. Set `True` to short-circuit.
+- **`StepResult.resolved_by`** — inner resolution path as `tuple[str, ...]`. Orchestrators propagate it from nested `run_skill` calls; `SkillResult.resolved_by` prepends the step name, building a hierarchical path like `("orchestrator", "inner_step")`.
 - **`ctx.prev`** — most recently executed step's `StepResult`. Starts as `ROOT` (`value=None`).
 - **`ctx.trace`** — dict of all prior results keyed by step name. Raises informative `KeyError` on miss; use `.get()` for optional lookups.
 - **`ctx.entry`** — the original input passed to `run_skill`.
