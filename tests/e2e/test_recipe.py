@@ -75,29 +75,38 @@ def parse_hours(ctx: SkillContext) -> StepResult:
     return StepResult(value=None, metadata={"reason": "no_hour_match"})
 
 
-def _prior_steps_payload(ctx: SkillContext) -> list[dict[str, object]]:
+def _prior_steps_payload(
+    trace: dict[str, StepResult],
+    skills: list[Skill],
+) -> list[dict[str, object]]:
     """Serialise prior steps with their intent, value, and metadata."""
     return [
         {
             "name": s.name,
             "description": s.description,
-            "value": ctx.trace[s.name].value,
-            "metadata": ctx.trace[s.name].metadata,
+            "value": trace[s.name].value,
+            "metadata": trace[s.name].metadata,
         }
-        for s in ctx.skills
-        if s.name in ctx.trace
+        for s in skills
+        if s.name in trace
     ]
 
 
-def _llm_diagnose(ctx: SkillContext, call: LMCaller) -> StepResult:
-    """Use an LLM to semantically parse the time or diagnose the failure."""
+def _llm_diagnose(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
+    """Run parser children, fall back to LLM when none resolve."""
+    inner = Skill(name="_parse", steps=steps)
+    r = run_skill(inner, ctx.entry)
+    if any(sr.resolved for sr in r.trace.values()):
+        return StepResult(value=r.value, metadata=r.metadata, resolved_by=r.resolved_by)
     print("[Trace] Running Step 3: llm_diagnose (Fallback Triggered)")
     user_msg = json.dumps(
-        {"text": ctx.entry.get("text", ""), "prior_steps": _prior_steps_payload(ctx)},
+        {
+            "text": ctx.entry.get("text", ""),
+            "prior_steps": _prior_steps_payload(r.trace, steps),
+        },
         indent=2,
     )
     print(f"  -> Prompting LLM with prior context:\n{user_msg}")
-
     try:
         raw_response = call(
             messages=[{"role": "user", "content": user_msg}],
@@ -122,13 +131,10 @@ def _llm_diagnose(ctx: SkillContext, call: LMCaller) -> StepResult:
 def _make_skill(caller: LMCaller) -> Skill:
     return Skill(
         name="extract_cook_time",
+        fn=lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_diagnose),
         steps=[
             Skill("λ::minutes", fn=parse_minutes),
             Skill("λ::hours", fn=parse_hours),
-            Skill(
-                "ψ::diagnose",
-                fn=lm(caller, system_prompt=LLM_SYSTEM_PROMPT)(_llm_diagnose),
-            ),
         ],
     )
 
@@ -138,25 +144,25 @@ TEST_CASES = [
         "id": "T1_minutes_regex",
         "text": "Bake the cookies for 45 mins at 350 degrees.",
         "expected_val": 45,
-        "expected_resolver": "λ::minutes",
+        "expected_resolver": ("extract_cook_time", "λ::minutes"),
     },
     {
         "id": "T2_hours_regex",
         "text": "Roast the chicken for 1.5 hours.",
         "expected_val": 90,
-        "expected_resolver": "λ::hours",
+        "expected_resolver": ("extract_cook_time", "λ::hours"),
     },
     {
         "id": "T3_llm_semantic_math",
         "text": "Pop it in the oven for half an hour.",
         "expected_val": 30,
-        "expected_resolver": "ψ::diagnose",
+        "expected_resolver": ("extract_cook_time",),
     },
     {
         "id": "T4_llm_visual_cue",
         "text": "Cook until the crust is golden brown and the cheese is bubbly.",
         "expected_val": None,
-        "expected_resolver": "ψ::diagnose",
+        "expected_resolver": ("extract_cook_time",),
     },
 ]
 
@@ -203,7 +209,7 @@ def test_llm_diagnose_parses_json():
         return '{"value": 30, "diagnosis": "half an hour = 30 min"}'
 
     ctx = SkillContext(entry={"text": "half an hour"})
-    result = _llm_diagnose(ctx, fake)
+    result = _llm_diagnose(ctx, [], fake)
     assert result.value == 30
     assert result.metadata["diagnosis"] == "half an hour = 30 min"
 
@@ -213,7 +219,7 @@ def test_llm_diagnose_strips_fences():
         return '```json\n{"value": 15, "diagnosis": "quarter hour"}\n```'
 
     ctx = SkillContext(entry={"text": "a quarter of an hour"})
-    result = _llm_diagnose(ctx, fake)
+    result = _llm_diagnose(ctx, [], fake)
     assert result.value == 15
 
 
@@ -222,7 +228,7 @@ def test_llm_diagnose_null_value():
         return '{"value": null, "diagnosis": "no time mentioned"}'
 
     ctx = SkillContext(entry={"text": "cook until bubbly"})
-    result = _llm_diagnose(ctx, fake)
+    result = _llm_diagnose(ctx, [], fake)
     assert result.value is None
     assert result.metadata["diagnosis"] == "no time mentioned"
 
@@ -232,7 +238,7 @@ def test_llm_diagnose_parse_error():
         return "not JSON at all"
 
     ctx = SkillContext(entry={"text": "..."})
-    result = _llm_diagnose(ctx, fake)
+    result = _llm_diagnose(ctx, [], fake)
     assert result.value is None
     assert result.metadata["reason"] == "llm_parse_error"
 
@@ -262,6 +268,20 @@ def test_prior_steps_payload_and_system_prompt():
     assert payload["prior_steps"][0]["metadata"] == {"reason": "no_minute_match"}
     assert payload["prior_steps"][1]["metadata"] == {"reason": "no_hour_match"}
     assert captured["system"] == LLM_SYSTEM_PROMPT
+
+
+def test_orchestrator_short_circuits_on_resolved_parser():
+    """When a parser resolves, the orchestrator returns without calling LLM."""
+    called = []
+
+    def spy(*, messages: list[dict[str, str]], **_kw: object) -> str:  # noqa: ARG001
+        called.append(True)
+        return '{"value": 99, "diagnosis": "should not run"}'
+
+    skill = _make_skill(spy)
+    result = run_skill(skill, {"text": "Bake for 45 mins."})
+    assert result.value == 45
+    assert called == []
 
 
 @pytest.mark.e2e

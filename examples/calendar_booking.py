@@ -5,8 +5,8 @@
 # them against the raw text, fills gaps, and flags ambiguity.
 #
 # - Intermediate steps fall through by default (`resolved=False`).
-# - The verifier reads `ctx.trace` (what each step found) and `ctx.skills`
-#   (each step's `description`) so it knows both the outcome and the intent.
+# - The verifier is an orchestrator: it receives the parser steps as its
+#   `steps` argument, runs them via `run_skill`, then cross-checks results.
 # - `@lm(model, system_prompt=...)` binds the model at decoration time, so
 #   the caller must be defined first.
 
@@ -153,10 +153,11 @@ def scripted_caller(*, messages: list[dict[str, str]], **_kw: object) -> str:
 
 
 # %% [markdown]
-# ## LLM verifier
+# ## LLM verifier (orchestrator)
 #
-# Serialises each prior step's *intent* (`description`) plus *outcome*
-# (`value`, `metadata`) and asks the model to produce a final booking.
+# Runs parser children via `run_skill`, serialises each child's *intent*
+# (`description`) plus *outcome* (`value`, `metadata`), and asks the model
+# to produce a final booking.
 
 # %%
 VERIFY_PROMPT = """\
@@ -173,23 +174,31 @@ Return ONLY JSON:
 """
 
 
-def _prior_payload(ctx: SkillContext) -> list[dict[str, object]]:
+def _prior_payload(
+    trace: dict[str, StepResult],
+    skills: list[Skill],
+) -> list[dict[str, object]]:
     return [
         {
             "name": s.name,
             "description": s.description,
-            "value": ctx.trace[s.name].value,
-            "metadata": ctx.trace[s.name].metadata,
+            "value": trace[s.name].value,
+            "metadata": trace[s.name].metadata,
         }
-        for s in ctx.skills
-        if s.name in ctx.trace
+        for s in skills
+        if s.name in trace
     ]
 
 
 @lm(scripted_caller, system_prompt=VERIFY_PROMPT)
-def verify(ctx: SkillContext, call: LMCaller) -> StepResult:
-    """Cross-check prior extractions against the raw text, produce a Booking."""
-    payload = {"text": ctx.entry["text"], "prior_steps": _prior_payload(ctx)}
+def verify(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
+    """Run parser children, cross-check extractions against the raw text."""
+    inner = Skill(name="_parse", steps=steps)
+    r = run_skill(inner, ctx.entry)
+    payload = {
+        "text": ctx.entry["text"],
+        "prior_steps": _prior_payload(r.trace, steps),
+    }
     try:
         msg = json.dumps(payload, indent=2)
         raw = call(messages=[{"role": "user", "content": msg}])
@@ -209,12 +218,12 @@ def verify(ctx: SkillContext, call: LMCaller) -> StepResult:
 # %%
 book_meeting = Skill(
     name="book_meeting",
+    fn=verify,
     steps=[
         Skill("λ::weekday", fn=parse_weekday),
         Skill("λ::time", fn=parse_time),
         Skill("λ::duration", fn=parse_duration),
         Skill("λ::topic", fn=parse_topic),
-        Skill("ψ::verify", fn=verify),
     ],
 )
 

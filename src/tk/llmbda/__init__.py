@@ -11,7 +11,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 from typing import Any, Protocol
 
-from tk.llmbda._check import _leaves, check_skill
+from tk.llmbda._check import check_skill
 
 try:
     __version__ = _package_version("tk-llmbda")
@@ -32,6 +32,7 @@ class StepResult:
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = False
+    resolved_by: tuple[str, ...] = ()
 
 
 ROOT = StepResult(value=None)  # sentinel
@@ -47,15 +48,15 @@ class _Trace(dict):
 
 @dataclass
 class SkillContext:
-    """Accumulator threaded through the skill sequence."""
+    """Runtime state threaded through the skill sequence."""
 
     entry: Any
-    skills: list[Skill] = field(default_factory=list)
     trace: dict[str, StepResult] = field(default_factory=_Trace)
     prev: StepResult = field(default_factory=lambda: ROOT)
 
 
 SkillFn = Callable[[SkillContext], StepResult]
+OrchestratorFn = Callable[[SkillContext, list["Skill"]], StepResult]
 LMSkillFn = Callable[[SkillContext, LMCaller], StepResult]
 
 
@@ -69,7 +70,7 @@ class Skill:
     """
 
     name: str
-    fn: SkillFn | None = None
+    fn: Callable[..., StepResult] | None = None
     steps: list[Skill] = field(default_factory=list)
     description: str = ""
 
@@ -83,7 +84,7 @@ class SkillResult:
     """Skill output with per-step trace."""
 
     skill: str
-    resolved_by: str
+    resolved_by: tuple[str, ...]
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     trace: dict[str, StepResult] = field(default_factory=dict)
@@ -93,8 +94,8 @@ def lm(
     model: LMCaller,
     *,
     system_prompt: str = "",
-) -> Callable[[LMSkillFn], SkillFn]:
-    """Bind a skill fn to *model*; decorated fn is (ctx, call)."""
+) -> Callable[[Callable[..., StepResult]], Callable[..., StepResult]]:
+    """Bind a skill fn to *model*; decorated fn is (ctx, call) or (ctx, steps, call)."""
     if system_prompt:
 
         def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
@@ -105,10 +106,10 @@ def lm(
     else:
         bound = model
 
-    def decorator(fn: LMSkillFn) -> SkillFn:
+    def decorator(fn: Callable[..., StepResult]) -> Callable[..., StepResult]:
         @wraps(fn)
-        def wrapper(ctx: SkillContext) -> StepResult:
-            return fn(ctx, bound)
+        def wrapper(ctx: SkillContext, *args: Any) -> StepResult:
+            return fn(ctx, *args, bound)
 
         wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
         wrapper.lm_model = model  # type: ignore[attr-defined]
@@ -159,17 +160,7 @@ def _duplicate_trace_names(skill: Skill) -> list[str]:
 def _walk(skill: Skill, ctx: SkillContext):
     """DFS walk yielding (name, result). Returns resolved bool."""
     if skill.fn:
-        call_ctx = (
-            SkillContext(
-                entry=ctx.entry,
-                skills=skill.steps,
-                trace=ctx.trace,
-                prev=ctx.prev,
-            )
-            if skill.steps
-            else ctx
-        )
-        result = skill.fn(call_ctx)
+        result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved
@@ -186,7 +177,7 @@ def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
     """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
     if duplicates := _duplicate_trace_names(skill):
         raise ValueError(duplicates)
-    ctx = SkillContext(entry=entry, skills=_leaves(skill))
+    ctx = SkillContext(entry=entry)
     yield from _walk(skill, ctx)
 
 
@@ -199,10 +190,10 @@ def run_skill(skill: Skill, entry: Any) -> SkillResult:
         trace[name] = result
         last, last_name = result, name
     if last is None:
-        return SkillResult(skill=skill.name, resolved_by="(empty)", value=None)
+        return SkillResult(skill=skill.name, resolved_by=(), value=None)
     return SkillResult(
         skill=skill.name,
-        resolved_by=last_name,
+        resolved_by=(last_name, *last.resolved_by),
         value=last.value,
         metadata=last.metadata,
         trace=trace,
@@ -230,6 +221,7 @@ __all__ = [
     "ROOT",
     "LMCaller",
     "LMSkillFn",
+    "OrchestratorFn",
     "Skill",
     "SkillContext",
     "SkillFn",

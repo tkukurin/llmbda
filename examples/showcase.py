@@ -36,7 +36,7 @@ def greet(ctx: SkillContext) -> StepResult:
 skill_greet = Skill(name="greeter", steps=[Skill("λ::greet", fn=greet)])
 r = run_skill(skill_greet, {"name": "λ"})
 assert r.value == "hello, λ"
-assert r.resolved_by == "λ::greet"
+assert r.resolved_by == ("λ::greet",)
 print(f"1. {r.value}")
 
 # %% [markdown]
@@ -98,11 +98,11 @@ skill_cache = Skill(
 )
 
 r_hit = run_skill(skill_cache, {"key": "known-key"})
-assert r_hit.resolved_by == "λ::cache"
+assert r_hit.resolved_by == ("λ::cache",)
 assert r_hit.value == "cached-value"
 
 r_miss = run_skill(skill_cache, {"key": "other"})
-assert r_miss.resolved_by == "λ::compute"
+assert r_miss.resolved_by == ("λ::compute",)
 assert r_miss.value == "computed-fresh"
 print(f"3. hit={r_hit.resolved_by}, miss={r_miss.resolved_by}")
 
@@ -150,11 +150,11 @@ skill_hybrid = Skill(
 )
 
 r_regex = run_skill(skill_hybrid, {"text": "deadline is 2025-01-15"})
-assert r_regex.resolved_by == "λ::regex"
+assert r_regex.resolved_by == ("λ::regex",)
 assert r_regex.metadata["source"] == "regex"
 
 r_llm = run_skill(skill_hybrid, {"text": "the fifteenth of January 2025"})
-assert r_llm.resolved_by == "ψ::llm"
+assert r_llm.resolved_by == ("ψ::llm",)
 print(f"5. regex={r_regex.resolved_by}, llm={r_llm.resolved_by}")
 
 # %% [markdown]
@@ -258,19 +258,21 @@ def verify_date(ctx: SkillContext) -> StepResult:
     return StepResult(value=value, metadata={"valid": valid})
 
 
-def retry_extract_verify(ctx: SkillContext) -> StepResult:
+def retry_extract_verify(ctx: SkillContext, steps: list[Skill]) -> StepResult:
     """Run extract→verify up to 3 times until valid."""
-    inner = Skill(name="inner", steps=ctx.skills)
+    inner = Skill(name="inner", steps=steps)
     for attempt in range(1, 4):
         r = run_skill(inner, ctx.entry)
         if r.metadata.get("valid"):
             return StepResult(
                 value=r.value,
                 metadata={"valid": True, "attempts": attempt},
+                resolved_by=r.resolved_by,
             )
     return StepResult(
         value=r.value,
         metadata={"valid": False, "attempts": 3},
+        resolved_by=r.resolved_by,
     )
 
 
@@ -466,7 +468,7 @@ print(f"18. intent={r.value}, confidence={r.metadata['confidence']}")
 # %%
 r = run_skill(Skill(name="noop"), {})
 assert r.value is None
-assert r.resolved_by == "(empty)"
+assert r.resolved_by == ()
 print(f"19. empty skill: resolved_by={r.resolved_by}")
 
 # %% [markdown]
