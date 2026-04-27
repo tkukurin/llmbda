@@ -717,13 +717,13 @@ def test_parallel_steps_prev_set_to_last_child(run):
 
 
 def test_parallel_after_sequential_shares_trace(run):
-    """A parallel block after a sequential step can't see prior trace (independent ctx)."""
+    """A parallel block after a sequential step shares the prior trace."""
     def setup(_ctx: SkillContext) -> StepResult:
         return StepResult(value="setup")
 
     def par_child(ctx: SkillContext) -> StepResult:
         prior = ctx.trace.get("setup")
-        return StepResult(value=f"saw:{prior}")
+        return StepResult(value=f"saw:{prior.value if prior else None}")
 
     skill = Skill(
         name="s",
@@ -735,7 +735,7 @@ def test_parallel_after_sequential_shares_trace(run):
         ],
     )
     result = run(skill, {})
-    assert result.trace["child"].value == "saw:None"
+    assert result.trace["child"].value == "saw:setup"
 
 
 def test_parallel_mixed_sync_async(run):

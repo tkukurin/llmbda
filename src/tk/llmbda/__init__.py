@@ -172,18 +172,33 @@ async def _awalk(skill: Skill, ctx: SkillContext):
         yield skill.name, result
         return
     if skill.parallel:
-        async def _run_child(child):
-            items = []
-            async for item in _awalk(child, SkillContext(entry=ctx.entry)):
-                items.append(item)
-            return items
-        gathered = await asyncio.gather(*[_run_child(c) for c in skill.steps])
-        for child_items in gathered:
-            for name, item in child_items:
+        queue = asyncio.Queue()
+        base_trace = _Trace(ctx.trace)
+        base_prev = ctx.prev
+
+        async def _run_child(child: Skill) -> None:
+            child_ctx = SkillContext(entry=ctx.entry, trace=_Trace(base_trace), prev=base_prev)
+            try:
+                async for name, item in _awalk(child, child_ctx):
+                    await queue.put((name, item))
+            finally:
+                await queue.put(None)
+
+        tasks = [asyncio.create_task(_run_child(c)) for c in skill.steps]
+        active_tasks = len(tasks)
+
+        while active_tasks > 0:
+            res = await queue.get()
+            if res is None:
+                active_tasks -= 1
+            else:
+                name, item = res
                 if isinstance(item, StepResult):
                     ctx.trace[name] = item
                     ctx.prev = item
                 yield name, item
+
+        await asyncio.gather(*tasks)
         return
     for child in skill.steps:
         async for name, item in _awalk(child, ctx):
@@ -237,22 +252,49 @@ async def _drain_stream(agen) -> StepResult:
 def _resolve(result: object) -> StepResult:
     """Resolve sync, async, or async-generator step return values."""
     if inspect.isasyncgen(result):
-        return asyncio.run(_drain_stream(result))
-    return asyncio.run(result) if inspect.isawaitable(result) else result  # type: ignore[arg-type]
+        coro = _drain_stream(result)
+    elif inspect.isawaitable(result):
+        coro = result
+    else:
+        return result  # type: ignore
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def _walk(skill: Skill, ctx: SkillContext):
     """DFS walk yielding (name, result). Returns resolved bool."""
     if skill.fn:
-        result = _resolve(skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx))
+        result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
+        if inspect.isgenerator(result):
+            final = None
+            for item in result:
+                if isinstance(item, StepResult):
+                    final = item
+                else:
+                    yield skill.name, item
+            if final is None:
+                msg = f"{skill.name}: streaming step must yield a final StepResult"
+                raise TypeError(msg)
+            result = final
+        else:
+            result = _resolve(result)
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved
         yield skill.name, result
         return resolved
     if skill.parallel:
+        base_trace = _Trace(ctx.trace)
+        base_prev = ctx.prev
         for child in skill.steps:
-            child_ctx = SkillContext(entry=ctx.entry)
+            child_ctx = SkillContext(entry=ctx.entry, trace=_Trace(base_trace), prev=base_prev)
             for name, result in _walk(child, child_ctx):
                 if isinstance(result, StepResult):
                     ctx.trace[name] = result
