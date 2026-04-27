@@ -69,6 +69,7 @@ class Skill:
     fn: Callable[..., StepResult] | None = None
     steps: list[Skill] = field(default_factory=list)
     description: str = ""
+    parallel: bool = False
     def __post_init__(self) -> None:
         if not self.description and self.fn:
             self.description = inspect.getdoc(self.fn) or ""
@@ -170,6 +171,20 @@ async def _awalk(skill: Skill, ctx: SkillContext):
         ctx.prev = result
         yield skill.name, result
         return
+    if skill.parallel:
+        async def _run_child(child):
+            items = []
+            async for item in _awalk(child, SkillContext(entry=ctx.entry)):
+                items.append(item)
+            return items
+        gathered = await asyncio.gather(*[_run_child(c) for c in skill.steps])
+        for child_items in gathered:
+            for name, item in child_items:
+                if isinstance(item, StepResult):
+                    ctx.trace[name] = item
+                    ctx.prev = item
+                yield name, item
+        return
     for child in skill.steps:
         async for name, item in _awalk(child, ctx):
             yield name, item
@@ -235,6 +250,15 @@ def _walk(skill: Skill, ctx: SkillContext):
         resolved = result.resolved
         yield skill.name, result
         return resolved
+    if skill.parallel:
+        for child in skill.steps:
+            child_ctx = SkillContext(entry=ctx.entry)
+            for name, result in _walk(child, child_ctx):
+                if isinstance(result, StepResult):
+                    ctx.trace[name] = result
+                    ctx.prev = result
+                yield name, result
+        return False
     for child in skill.steps:
         resolved = yield from _walk(child, ctx)
         if resolved:

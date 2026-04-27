@@ -655,6 +655,111 @@ def test_streaming_step_resolved_short_circuits(run):
     assert result.resolved_by == ("stream",)
 
 
+def test_parallel_steps_run_concurrently(run):
+    """Parallel composite runs children independently and merges trace."""
+    async def slow_a(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="a")
+
+    async def slow_b(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="b")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("par", parallel=True, steps=[
+                Skill("a", fn=slow_a),
+                Skill("b", fn=slow_b),
+            ]),
+        ],
+    )
+    result = run(skill, {})
+    assert result.trace["a"].value == "a"
+    assert result.trace["b"].value == "b"
+
+
+def test_parallel_steps_get_independent_contexts(run):
+    """Parallel children don't see each other's trace."""
+    def first(_ctx: SkillContext) -> StepResult:
+        return StepResult(value=1)
+
+    def second(ctx: SkillContext) -> StepResult:
+        assert ctx.trace.get("first") is None
+        return StepResult(value=2)
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("par", parallel=True, steps=[
+                Skill("first", fn=first),
+                Skill("second", fn=second),
+            ]),
+        ],
+    )
+    result = run(skill, {})
+    assert result.trace["first"].value == 1
+    assert result.trace["second"].value == 2
+
+
+def test_parallel_steps_prev_set_to_last_child(run):
+    """After a parallel block, ctx.prev is the last child's result."""
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("par", parallel=True, steps=[
+                Skill("a", fn=lambda _: StepResult(value="a")),
+                Skill("b", fn=lambda _: StepResult(value="b")),
+            ]),
+            Skill("after", fn=lambda ctx: StepResult(value=f"prev:{ctx.prev.value}")),
+        ],
+    )
+    result = run(skill, {})
+    assert result.value == "prev:b"
+
+
+def test_parallel_after_sequential_shares_trace(run):
+    """A parallel block after a sequential step can't see prior trace (independent ctx)."""
+    def setup(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="setup")
+
+    def par_child(ctx: SkillContext) -> StepResult:
+        prior = ctx.trace.get("setup")
+        return StepResult(value=f"saw:{prior}")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("setup", fn=setup),
+            Skill("par", parallel=True, steps=[
+                Skill("child", fn=par_child),
+            ]),
+        ],
+    )
+    result = run(skill, {})
+    assert result.trace["child"].value == "saw:None"
+
+
+def test_parallel_mixed_sync_async(run):
+    """Parallel block handles a mix of sync and async step fns."""
+    def sync_step(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="sync")
+
+    async def async_step(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="async")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("par", parallel=True, steps=[
+                Skill("s", fn=sync_step),
+                Skill("a", fn=async_step),
+            ]),
+        ],
+    )
+    result = run(skill, {})
+    assert result.trace["s"].value == "sync"
+    assert result.trace["a"].value == "async"
+
+
 async def _acollect(skill, entry):
     return [item async for item in aiter_skill(skill, entry)]
 
