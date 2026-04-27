@@ -230,9 +230,9 @@ def verify_date(ctx: SkillContext) -> StepResult:
     valid = bool(value and _ISO_RE.fullmatch(str(value)))
     return StepResult(value=value, metadata={"valid": valid})
 
-def retry_extract_verify(ctx: SkillContext) -> StepResult:
+def retry_extract_verify(ctx: SkillContext, steps: list[Skill]) -> StepResult:
     """Run extract→verify up to 3 times until valid."""
-    inner = Skill(name="inner", steps=ctx.skills)
+    inner = Skill(name="inner", steps=steps)
     for attempt in range(1, 4):
         r = run_skill(inner, ctx.entry)
         if r.metadata.get("valid"):

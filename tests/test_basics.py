@@ -154,11 +154,14 @@ def test_same_name_allowed_across_outer_and_orchestrator_child_scopes():
     def _step(_ctx):
         return StepResult(value="ok")
 
+    def _orch_step(_ctx, _steps):
+        return StepResult(value="ok")
+
     skill = Skill(
         name="s",
         steps=[
             Skill("same", fn=_step),
-            Skill("orch", fn=_step, steps=[Skill("same", fn=_step)]),
+            Skill("orch", fn=_orch_step, steps=[Skill("same", fn=_step)]),
         ],
     )
     result = run_skill(skill, {})

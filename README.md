@@ -100,14 +100,13 @@ The runtime walks composites via DFS. All leaves share a single `ctx.trace`.
 
 ## Orchestrator: `fn` + `steps`
 
-A skill with both `fn` and `steps` is an orchestrator — `fn` controls how
-the children execute. The runtime sets `ctx.skills` to the skill's children
-before calling `fn`, so there's no duplication:
+A skill with both `fn` and `steps` is an orchestrator — `fn` receives the
+children as an explicit second argument and controls how they execute:
 
 ```python
-def retry(ctx: SkillContext) -> StepResult:
+def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
     """Run children up to 3 times until valid."""
-    inner = Skill(name="inner", steps=ctx.skills)
+    inner = Skill(name="inner", steps=steps)
     for attempt in range(1, 4):
         r = run_skill(inner, ctx.entry)
         if r.metadata.get("valid"):
@@ -124,9 +123,9 @@ skill = Skill(
 )
 ```
 
+- Leaf fns are `(ctx) -> StepResult`. Orchestrator fns are `(ctx, steps) -> StepResult`.
 - Children run in a fresh `SkillContext` (via `run_skill`), so they don't
   see the outer trace. Pass data through `entry` if needed.
-- `ctx.skills` is restored after `fn` returns (or raises).
 
 ## Static validation
 
@@ -150,8 +149,7 @@ issues = check_skill(skill)
 - **`ctx.prev`** — most recently executed step's `StepResult`. Starts as `ROOT` (`value=None`).
 - **`ctx.trace`** — dict of all prior results keyed by step name. Raises informative `KeyError` on miss; use `.get()` for optional lookups.
 - **`ctx.entry`** — the original input passed to `run_skill`.
-- **`ctx.skills`** — for orchestrators: the skill's declared children. For leaves: the top-level leaves list.
-- **`@lm(model, system_prompt=...)`** — binds model at decoration time. Decorated fn is `(ctx, call)`; `call` prepends `system_prompt`.
+- **`@lm(model, system_prompt=...)`** — binds model at decoration time. Decorated fn is `(ctx, call)` for leaves or `(ctx, steps, call)` for orchestrators; `call` prepends `system_prompt`.
 - **`Skill.description`** — human-readable summary; falls back to fn docstring. Separate from `@lm` system prompts (read those via `fn.lm_system_prompt`).
 - **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, confidence.
 - **`iter_skill`** — same as `run_skill` but yields `(name, result)` per step for streaming or early exit.
