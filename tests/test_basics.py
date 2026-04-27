@@ -31,6 +31,15 @@ def counting_step(ctx: SkillContext) -> StepResult:
     )
 
 
+def _documented_step(_ctx: SkillContext) -> StepResult:
+    """Extract a weekday name."""
+    return StepResult(value=None)
+
+
+def _bare_step(_ctx: SkillContext) -> StepResult:
+    return StepResult(value="ok")
+
+
 def test_single_step():
     skill = Skill(name="echo", steps=[Skill("echo", fn=echo_step)])
     result = run_skill(skill, {"x": 1})
@@ -93,60 +102,37 @@ def test_prior_accumulates():
     assert result.trace["deposit"].metadata == {"order": 1}
 
 
-def test_duplicate_step_names_raise_before_running():
+@pytest.mark.parametrize(
+    "make_skill",
+    [
+        lambda fn: Skill("dup", steps=[Skill("same", fn=fn), Skill("same", fn=fn)]),
+        lambda fn: Skill(
+            "s",
+            steps=[
+                Skill("same", fn=fn, steps=[Skill("child", fn=fn)]),
+                Skill("same", fn=fn),
+            ],
+        ),
+        lambda fn: Skill(
+            "s",
+            steps=[
+                Skill(
+                    "orch", fn=fn, steps=[Skill("same", fn=fn), Skill("same", fn=fn)]
+                ),
+            ],
+        ),
+    ],
+    ids=["flat", "outer-trace", "orchestrator-children"],
+)
+def test_duplicate_names_raise_before_running(make_skill):
     called: list[str] = []
 
     def _step(_ctx):
         called.append("ran")
         return StepResult(value=None)
 
-    skill = Skill(
-        name="dup",
-        steps=[Skill("same", fn=_step), Skill("same", fn=_step)],
-    )
     with pytest.raises(ValueError, match="same"):
-        list(iter_skill(skill, {}))
-    assert called == []
-
-
-def test_duplicate_outer_trace_names_raise_before_running():
-    called: list[str] = []
-
-    def _step(_ctx):
-        called.append("ran")
-        return StepResult(value=None)
-
-    skill = Skill(
-        name="s",
-        steps=[
-            Skill("same", fn=_step, steps=[Skill("child", fn=_step)]),
-            Skill("same", fn=_step),
-        ],
-    )
-    with pytest.raises(ValueError, match="same"):
-        list(iter_skill(skill, {}))
-    assert called == []
-
-
-def test_duplicate_orchestrator_child_names_raise_before_running():
-    called: list[str] = []
-
-    def _step(_ctx):
-        called.append("ran")
-        return StepResult(value=None)
-
-    skill = Skill(
-        name="s",
-        steps=[
-            Skill(
-                "orch",
-                fn=_step,
-                steps=[Skill("same", fn=_step), Skill("same", fn=_step)],
-            ),
-        ],
-    )
-    with pytest.raises(ValueError, match="same"):
-        list(iter_skill(skill, {}))
+        list(iter_skill(make_skill(_step), {}))
     assert called == []
 
 
@@ -320,27 +306,17 @@ def test_iter_skill_propagates_and_preserves_prior_yields():
     assert seen == ["ok"]
 
 
-def test_skill_description_from_docstring():
-    def my_step(_ctx: SkillContext) -> StepResult:
-        """Extract a weekday name."""
-        return StepResult(value=None)
-
-    s = Skill("my_step", fn=my_step)
-    assert s.description == "Extract a weekday name."
-
-
-def test_skill_description_explicit_override():
-    def my_step(_ctx: SkillContext) -> StepResult:
-        """This docstring is ignored."""
-        return StepResult(value=None)
-
-    s = Skill("my_step", fn=my_step, description="Custom description")
-    assert s.description == "Custom description"
-
-
-def test_skill_description_no_docstring():
-    s = Skill("anon", fn=lambda _ctx: StepResult(value=None))
-    assert s.description == ""
+@pytest.mark.parametrize(
+    ("fn", "kwargs", "expected"),
+    [
+        (lambda _: StepResult(value=None), {}, ""),
+        (_documented_step, {}, "Extract a weekday name."),
+        (_documented_step, {"description": "Custom description"}, "Custom description"),
+    ],
+    ids=["no-docstring", "from-docstring", "explicit-override"],
+)
+def test_skill_description(fn, kwargs, expected):
+    assert Skill("s", fn=fn, **kwargs).description == expected
 
 
 def test_skill_description_from_lm_wrapped_docstring():
@@ -356,43 +332,32 @@ def test_skill_description_from_lm_wrapped_docstring():
     assert s.description == "LLM step docs."
 
 
-def test_lm_prepends_system_prompt():
+_SYSTEM_HI = {"role": "system", "content": "be terse"}
+_USER_HI = {"role": "user", "content": "hi"}
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("be terse", [[_SYSTEM_HI, _USER_HI]]),
+        ("", [[_USER_HI]]),
+    ],
+    ids=["with-prompt", "no-prompt"],
+)
+def test_lm_system_prompt_handling(prompt, expected):
     seen: list[list[dict[str, str]]] = []
 
     def spy(*, messages: list[dict[str, str]], **_kw: Any) -> str:
         seen.append(messages)
         return "ok"
 
-    @lm(spy, system_prompt="be terse")
+    @lm(spy, system_prompt=prompt)
     def llm_step(_ctx: SkillContext, call: Any) -> StepResult:
         call(messages=[{"role": "user", "content": "hi"}])
         return StepResult(value="done")
 
-    skill = Skill(name="s", steps=[Skill("llm", fn=llm_step)])
-    run_skill(skill, {})
-    assert seen == [
-        [
-            {"role": "system", "content": "be terse"},
-            {"role": "user", "content": "hi"},
-        ]
-    ]
-
-
-def test_lm_no_prompt_passes_through():
-    seen: list[list[dict[str, str]]] = []
-
-    def spy(*, messages: list[dict[str, str]], **_kw: Any) -> str:
-        seen.append(messages)
-        return "ok"
-
-    @lm(spy)
-    def llm_step(_ctx: SkillContext, call: Any) -> StepResult:
-        call(messages=[{"role": "user", "content": "hi"}])
-        return StepResult(value="done")
-
-    skill = Skill(name="s", steps=[Skill("llm", fn=llm_step)])
-    run_skill(skill, {})
-    assert seen == [[{"role": "user", "content": "hi"}]]
+    run_skill(Skill(name="s", steps=[Skill("llm", fn=llm_step)]), {})
+    assert seen == expected
 
 
 def test_lm_per_step_model():
@@ -556,18 +521,18 @@ def test_prior_get_returns_none_for_missing():
     run_skill(skill, {})
 
 
-def test_raw_return_wrapped_as_step_result():
-    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: "hello")])
+@pytest.mark.parametrize(
+    ("fn", "expected"),
+    [
+        (lambda _: "hello", "hello"),
+        (lambda _: None, None),
+    ],
+    ids=["string", "none"],
+)
+def test_raw_return_wrapped(fn, expected):
+    skill = Skill(name="s", steps=[Skill("a", fn=fn)])
     result = run_skill(skill, {})
-    assert result.value == "hello"
-    assert result.resolved_by == ("a",)
-
-
-def test_raw_return_none_wrapped():
-    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: None)])
-    result = run_skill(skill, {})
-    assert result.value is None
-    assert "a" in result.trace
+    assert result.value == expected
     assert isinstance(result.trace["a"], StepResult)
 
 
@@ -585,7 +550,11 @@ def test_raw_return_in_chain_updates_prev():
 
 def test_explicit_step_result_still_works():
     """Ensure explicit StepResult isn't double-wrapped."""
-    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: StepResult(value="x", resolved=True))])
+
+    def resolve(_):
+        return StepResult(value="x", resolved=True)
+
+    skill = Skill(name="s", steps=[Skill("a", fn=resolve)])
     result = run_skill(skill, {})
     assert result.value == "x"
     assert result.resolved_by == ("a",)
@@ -600,7 +569,10 @@ def test_run_skill_kwargs_entry():
 
 
 def test_iter_skill_kwargs_entry():
-    skill = Skill(name="s", steps=[Skill("a", fn=lambda ctx: StepResult(value=ctx.entry["x"]))])
+    def read_x(ctx):
+        return StepResult(value=ctx.entry["x"])
+
+    skill = Skill(name="s", steps=[Skill("a", fn=read_x)])
     [(_, r)] = list(iter_skill(skill, x=10))
     assert r.value == 10
 
@@ -616,28 +588,29 @@ def test_positional_entry_still_works():
     assert run_skill(skill, {"x": 1}).value == {"x": 1}
 
 
-def test_bare_callable_auto_wrapped():
-    def my_step(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="ok")
-
-    skill = Skill(name="s", steps=[my_step])
-    assert len(skill.steps) == 1
+@pytest.mark.parametrize(
+    ("fn", "expected_name", "expected_value"),
+    [
+        (_bare_step, "_bare_step", "ok"),
+        (lambda _: StepResult(value=1), "<lambda>", 1),
+    ],
+    ids=["named", "lambda"],
+)
+def test_bare_callable_wrapping(fn, expected_name, expected_value):
+    skill = Skill(name="s", steps=[fn])
     assert isinstance(skill.steps[0], Skill)
-    assert skill.steps[0].name == "my_step"
-    assert run_skill(skill, {}).value == "ok"
-
-
-def test_bare_lambda_uses_lambda_name():
-    skill = Skill(name="s", steps=[lambda _: StepResult(value=1)])
-    assert skill.steps[0].name == "<lambda>"
-    assert run_skill(skill, {}).value == 1
+    assert skill.steps[0].name == expected_name
+    assert run_skill(skill, {}).value == expected_value
 
 
 def test_mixed_skill_and_callable_steps():
     def step_b(_ctx: SkillContext) -> StepResult:
         return StepResult(value="b")
 
-    skill = Skill(name="s", steps=[Skill("a", fn=lambda _: StepResult(value="a")), step_b])
+    def step_a(_):
+        return StepResult(value="a")
+
+    skill = Skill(name="s", steps=[Skill("a", fn=step_a), step_b])
     result = run_skill(skill, {})
     assert list(result.trace) == ["a", "step_b"]
     assert result.value == "b"

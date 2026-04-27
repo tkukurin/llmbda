@@ -76,7 +76,9 @@ class Skill:
 
     def __post_init__(self) -> None:
         self.steps = [
-            s if isinstance(s, Skill) else Skill(name=getattr(s, "__name__", str(s)), fn=s)
+            s
+            if isinstance(s, Skill)
+            else Skill(name=getattr(s, "__name__", str(s)), fn=s)
             for s in self.steps
         ]
         if not self.description and self.fn:
@@ -182,12 +184,17 @@ def _walk(skill: Skill, ctx: SkillContext):
 def _make_entry(entry: Any, kwargs: dict[str, Any]) -> Any:
     if kwargs:
         if entry is not None:
-            raise TypeError("pass either positional entry or kwargs, not both")
+            msg = "pass either positional entry or kwargs, not both"
+            raise TypeError(msg)
         return kwargs
     return entry
 
 
-def iter_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> Iterator[tuple[str, StepResult]]:
+def iter_skill(
+    skill: Skill,
+    entry: Any = None,
+    **kwargs: Any,
+) -> Iterator[tuple[str, StepResult]]:
     """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
     if duplicates := _duplicate_trace_names(skill):
         raise ValueError(duplicates)
