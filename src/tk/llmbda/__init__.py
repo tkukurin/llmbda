@@ -70,8 +70,8 @@ class Skill:
     """
 
     name: str
-    fn: Callable[..., Any] | None = None
-    steps: list[Skill | Callable[..., Any]] = field(default_factory=list)
+    fn: Callable[..., StepResult] | None = None
+    steps: list[Skill] = field(default_factory=list)
     description: str = ""
 
     def __post_init__(self) -> None:
