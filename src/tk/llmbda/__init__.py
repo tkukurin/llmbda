@@ -70,11 +70,17 @@ class Skill:
     """
 
     name: str
-    fn: Callable[..., StepResult] | None = None
-    steps: list[Skill] = field(default_factory=list)
+    fn: Callable[..., Any] | None = None
+    steps: list[Skill | Callable[..., Any]] = field(default_factory=list)
     description: str = ""
 
     def __post_init__(self) -> None:
+        self.steps = [
+            s
+            if isinstance(s, Skill)
+            else Skill(name=getattr(s, "__name__", str(s)), fn=s)
+            for s in self.steps
+        ]
         if not self.description and self.fn:
             self.description = inspect.getdoc(self.fn) or ""
 
@@ -161,6 +167,8 @@ def _walk(skill: Skill, ctx: SkillContext):
     """DFS walk yielding (name, result). Returns resolved bool."""
     if skill.fn:
         result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
+        if not isinstance(result, StepResult):
+            result = StepResult(value=result)
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved
@@ -173,20 +181,33 @@ def _walk(skill: Skill, ctx: SkillContext):
     return False
 
 
-def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
+def _make_entry(entry: Any, kwargs: dict[str, Any]) -> Any:
+    if kwargs:
+        if entry is not None:
+            msg = "pass either positional entry or kwargs, not both"
+            raise TypeError(msg)
+        return kwargs
+    return entry
+
+
+def iter_skill(
+    skill: Skill,
+    entry: Any = None,
+    **kwargs: Any,
+) -> Iterator[tuple[str, StepResult]]:
     """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
     if duplicates := _duplicate_trace_names(skill):
         raise ValueError(duplicates)
-    ctx = SkillContext(entry=entry)
+    ctx = SkillContext(entry=_make_entry(entry, kwargs))
     yield from _walk(skill, ctx)
 
 
-def run_skill(skill: Skill, entry: Any) -> SkillResult:
+def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> SkillResult:
     """Run *skill* to completion."""
     trace: dict[str, StepResult] = {}
     last: StepResult | None = None
     last_name = "(empty)"
-    for name, result in iter_skill(skill, entry):
+    for name, result in iter_skill(skill, _make_entry(entry, kwargs)):
         trace[name] = result
         last, last_name = result, name
     if last is None:

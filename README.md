@@ -6,16 +6,20 @@ steps into a skill; the runtime walks them in order until one resolves.
 ## Deterministic skill
 
 ```python
-from tk.llmbda import Skill, SkillContext, StepResult, run_skill
+from tk.llmbda import Skill, SkillContext, run_skill
 
-def greet(ctx: SkillContext) -> StepResult:
-    name = ctx.entry.get("name", "world")
-    return StepResult(value=f"hello, {name}")
+def greet(ctx: SkillContext) -> str:
+    return f"hello, {ctx.entry.get('name', 'world')}"
 
-skill = Skill(name="greeter", steps=[Skill("greet", fn=greet)])
-result = run_skill(skill, {"name": "λ"})
+skill = Skill(name="greeter", steps=[greet])
+result = run_skill(skill, name="λ")
 # SkillResult(skill="greeter", resolved_by=("greet",), value="hello, λ", ...)
 ```
+
+Step fns that return a non-`StepResult` are auto-wrapped as
+`StepResult(value=x)`. Bare callables in `steps` are auto-wrapped as
+`Skill(name=fn.__name__, fn=fn)`. Keyword arguments to `run_skill` become
+the `ctx.entry` dict.
 
 ## LLM skill
 
@@ -34,7 +38,7 @@ def extract_date(ctx: SkillContext, call) -> StepResult:
     return StepResult(value=raw)
 
 skill = Skill(name="dates", steps=[Skill("extract", fn=extract_date)])
-result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
+result = run_skill(skill, text="let's meet on the 15th of January 2025")
 # SkillResult(skill="dates", resolved_by=("extract",), value="2025-01-15", ...)
 ```
 
@@ -43,16 +47,16 @@ result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
 Each step can access the previous step's result via `ctx.prev`:
 
 ```python
-from tk.llmbda import Skill, SkillContext, StepResult, run_skill
+from tk.llmbda import Skill, SkillContext, run_skill
 
-def step_a(ctx: SkillContext) -> StepResult:
-    return StepResult(value=ctx.entry["x"] * 2)
+def double(ctx: SkillContext) -> int:
+    return ctx.entry["x"] * 2
 
-def step_b(ctx: SkillContext) -> StepResult:
-    return StepResult(value=ctx.prev.value + 10)
+def add_ten(ctx: SkillContext) -> int:
+    return ctx.prev.value + 10
 
-skill = Skill(name="math", steps=[Skill("a", fn=step_a), Skill("b", fn=step_b)])
-result = run_skill(skill, {"x": 5})
+skill = Skill(name="math", steps=[double, add_ten])
+result = run_skill(skill, x=5)
 # result.value == 20
 ```
 
@@ -74,7 +78,10 @@ def expensive(ctx: SkillContext) -> StepResult:
     return StepResult(value=compute(ctx.entry))
 
 skill = Skill(name="s", steps=[Skill("cache", fn=try_cache), Skill("compute", fn=expensive)])
+# run_skill(skill, key="known-key")
 ```
+
+Use explicit `StepResult` when you need `resolved`, `metadata`, or `resolved_by`.
 
 ## Nested composition
 
@@ -147,6 +154,9 @@ issues = check_skill(skill)
 - **`Skill`** — recursive composition primitive. Leaf (`fn`), composite (`steps`), or orchestrator (`fn` + `steps`).
 - **`StepResult.resolved`** — defaults to `False`; steps fall through. Set `True` to short-circuit.
 - **`StepResult.resolved_by`** — inner resolution path as `tuple[str, ...]`. Orchestrators propagate it from nested `run_skill` calls; `SkillResult.resolved_by` prepends the step name, building a hierarchical path like `("orchestrator", "inner_step")`.
+- **Implicit `StepResult`** — step fns can return any value; non-`StepResult` returns are wrapped as `StepResult(value=x)`. Use explicit `StepResult` for `resolved`, `metadata`, or `resolved_by`.
+- **Bare callables in `steps`** — `steps=[my_fn]` auto-wraps to `Skill(name=fn.__name__, fn=my_fn)`. Use explicit `Skill(name, fn=...)` for custom names.
+- **`run_skill` / `iter_skill` kwargs** — `run_skill(skill, name="λ")` is sugar for `run_skill(skill, {"name": "λ"})`.
 - **`ctx.prev`** — most recently executed step's `StepResult`. Starts as `ROOT` (`value=None`).
 - **`ctx.trace`** — dict of all prior results keyed by step name. Raises informative `KeyError` on miss; use `.get()` for optional lookups.
 - **`ctx.entry`** — the original input passed to `run_skill`.
@@ -171,4 +181,14 @@ uv run examples/support_triage.py
 
 # all 20 use cases in one file (no external deps)
 uv run examples/showcase.py
+```
+
+## Development
+
+```bash
+# activate the pre-push hook (runs ruff + pytest before each push)
+git config core.hooksPath .githooks
+
+# skip the hook when you need to force-push a WIP
+git push --no-verify
 ```

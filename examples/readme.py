@@ -72,7 +72,7 @@ skill = Skill(
     ],
 )
 
-result = run_skill(skill, {"text": "let's meet on the 15th of January 2025"})
+result = run_skill(skill, text="let's meet on the 15th of January 2025")
 print(f"resolved_by: {result.resolved_by}")
 print(f"value:       {result.value}")
 # resolved_by: ('ψ::refine',)

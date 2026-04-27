@@ -234,7 +234,7 @@ REQUESTS = [
 ]
 
 for text in REQUESTS:
-    result = run_skill(book_meeting, {"text": text})
+    result = run_skill(book_meeting, text=text)
     print(f"\n--- {text}")
     print(f"resolved_by: {result.resolved_by}")
     print(f"booking:     {result.value}")
