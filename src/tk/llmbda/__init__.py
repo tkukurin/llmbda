@@ -175,20 +175,28 @@ def _walk(skill: Skill, ctx: SkillContext):
     return False
 
 
-def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
+def _make_entry(entry: Any, kwargs: dict[str, Any]) -> Any:
+    if kwargs:
+        if entry is not None:
+            raise TypeError("pass either positional entry or kwargs, not both")
+        return kwargs
+    return entry
+
+
+def iter_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> Iterator[tuple[str, StepResult]]:
     """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
     if duplicates := _duplicate_trace_names(skill):
         raise ValueError(duplicates)
-    ctx = SkillContext(entry=entry)
+    ctx = SkillContext(entry=_make_entry(entry, kwargs))
     yield from _walk(skill, ctx)
 
 
-def run_skill(skill: Skill, entry: Any) -> SkillResult:
+def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> SkillResult:
     """Run *skill* to completion."""
     trace: dict[str, StepResult] = {}
     last: StepResult | None = None
     last_name = "(empty)"
-    for name, result in iter_skill(skill, entry):
+    for name, result in iter_skill(skill, _make_entry(entry, kwargs)):
         trace[name] = result
         last, last_name = result, name
     if last is None:

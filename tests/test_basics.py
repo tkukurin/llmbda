@@ -589,3 +589,28 @@ def test_explicit_step_result_still_works():
     result = run_skill(skill, {})
     assert result.value == "x"
     assert result.resolved_by == ("a",)
+
+
+def test_run_skill_kwargs_entry():
+    def read_name(ctx: SkillContext) -> StepResult:
+        return StepResult(value=ctx.entry["name"])
+
+    skill = Skill(name="s", steps=[Skill("a", fn=read_name)])
+    assert run_skill(skill, name="alice").value == "alice"
+
+
+def test_iter_skill_kwargs_entry():
+    skill = Skill(name="s", steps=[Skill("a", fn=lambda ctx: StepResult(value=ctx.entry["x"]))])
+    [(_, r)] = list(iter_skill(skill, x=10))
+    assert r.value == 10
+
+
+def test_kwargs_and_positional_entry_raises():
+    skill = Skill(name="s", steps=[Skill("a", fn=echo_step)])
+    with pytest.raises(TypeError, match="not both"):
+        run_skill(skill, {"x": 1}, y=2)
+
+
+def test_positional_entry_still_works():
+    skill = Skill(name="s", steps=[Skill("a", fn=echo_step)])
+    assert run_skill(skill, {"x": 1}).value == {"x": 1}
