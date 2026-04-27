@@ -21,12 +21,14 @@ except PackageNotFoundError:
 
 class LMCaller(Protocol):
     """OpenAI-shape caller: keyword-only messages, arbitrary kwargs."""
+
     def __call__(self, *, messages: list[dict[str, str]], **kwargs: Any) -> Any: ...
 
 
 @dataclass
 class StepResult:
     """Skill output. resolved=True short-circuits the remaining sequence."""
+
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
     resolved: bool = False
@@ -38,6 +40,7 @@ ROOT = StepResult(value=None)  # sentinel
 
 class _Trace(dict):
     """dict with informative KeyError for skill lookups."""
+
     def __missing__(self, key: str):
         available = ", ".join(self) or "(none)"
         raise KeyError(f"{key!r} not in trace (available: {available})")
@@ -46,6 +49,7 @@ class _Trace(dict):
 @dataclass
 class SkillContext:
     """Runtime state threaded through the skill sequence."""
+
     entry: Any
     trace: dict[str, StepResult] = field(default_factory=_Trace)
     prev: StepResult = field(default_factory=lambda: ROOT)
@@ -64,10 +68,12 @@ class Skill:
     fn + steps: fn is the orchestrator; children are declared for
         introspection and static checks but fn controls execution.
     """
+
     name: str
     fn: Callable[..., StepResult] | None = None
     steps: list[Skill] = field(default_factory=list)
     description: str = ""
+
     def __post_init__(self) -> None:
         if not self.description and self.fn:
             self.description = inspect.getdoc(self.fn) or ""
@@ -76,6 +82,7 @@ class Skill:
 @dataclass
 class SkillResult:
     """Skill output with per-step trace."""
+
     skill: str
     resolved_by: tuple[str, ...]
     value: Any
@@ -90,6 +97,7 @@ def lm(
 ) -> Callable[[Callable[..., StepResult]], Callable[..., StepResult]]:
     """Bind a skill fn to *model*; decorated fn is (ctx, call) or (ctx, steps, call)."""
     if system_prompt:
+
         def bound(*, messages: list[dict[str, str]], **kwargs: Any) -> Any:
             return model(
                 messages=[{"role": "system", "content": system_prompt}, *messages],
@@ -102,9 +110,11 @@ def lm(
         @wraps(fn)
         def wrapper(ctx: SkillContext, *args: Any) -> StepResult:
             return fn(ctx, *args, bound)
+
         wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
         wrapper.lm_model = model  # type: ignore[attr-defined]
         return wrapper
+
     return decorator
 
 

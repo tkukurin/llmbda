@@ -186,6 +186,7 @@ def test_orchestrator_can_run_children_via_run_skill():
 
 def test_orchestrator_shares_outer_trace():
     """Orchestrator receives the same ctx, so it can read prior trace entries."""
+
     def setup(_ctx: SkillContext) -> StepResult:
         return StepResult(value="setup_value")
 

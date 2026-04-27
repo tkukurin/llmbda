@@ -547,6 +547,7 @@ def test_prior_keyerror_includes_available_steps():
 
 def test_prior_get_returns_none_for_missing():
     """dict.get bypasses __missing__ and returns the default."""
+
     def check_get(ctx: SkillContext) -> StepResult:
         assert ctx.trace.get("missing") is None
         return StepResult(value="ok")

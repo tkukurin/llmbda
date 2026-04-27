@@ -61,7 +61,8 @@ def parse_explicit_todo(ctx: SkillContext) -> StepResult:
 
 
 def _prior_steps_payload(
-    trace: dict[str, StepResult], skills: list[Skill],
+    trace: dict[str, StepResult],
+    skills: list[Skill],
 ) -> list[dict[str, object]]:
     """Serialise prior steps with their intent and outcome for LLM context."""
     return [
@@ -77,7 +78,9 @@ def _prior_steps_payload(
 
 
 def _llm_extract_action(
-    ctx: SkillContext, steps: list[Skill], call: LMCaller,
+    ctx: SkillContext,
+    steps: list[Skill],
+    call: LMCaller,
 ) -> StepResult:
     """Run parser children, then infer the action item via LLM on fallback."""
     inner = Skill(name="_parse", steps=steps)

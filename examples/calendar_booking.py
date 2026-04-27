@@ -175,7 +175,8 @@ Return ONLY JSON:
 
 
 def _prior_payload(
-    trace: dict[str, StepResult], skills: list[Skill],
+    trace: dict[str, StepResult],
+    skills: list[Skill],
 ) -> list[dict[str, object]]:
     return [
         {
