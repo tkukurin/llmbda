@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "openai>=2.32.0",
+#     "litellm>=1.0",
 #     "tk-llmbda",
 # ]
 #
@@ -12,11 +12,9 @@ from __future__ import annotations
 
 import re
 
-from openai import OpenAI
+from litellm import completion
 
 from tk.llmbda import Skill, SkillContext, StepResult, lm, run_skill
-
-client = OpenAI()
 
 _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
@@ -28,16 +26,12 @@ def extract_date_regex(ctx: SkillContext) -> StepResult:
     return StepResult(None, {"reason": "no_iso_date"})
 
 
-def oai(*, messages, **kwargs):
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        **kwargs,
-    )
+def llm(*, messages, **kwargs):
+    resp = completion(model="gpt-4o-mini", messages=messages, **kwargs)
     return resp.choices[0].message.content
 
 
-@lm(oai, system_prompt="Extract a date from the text. Return ONLY an ISO-8601 date.")
+@lm(llm, system_prompt="Extract a date from the text. Return ONLY an ISO-8601 date.")
 def extract_date_lm(ctx: SkillContext, call) -> StepResult:
     """Extract a date via LLM."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
@@ -45,7 +39,7 @@ def extract_date_lm(ctx: SkillContext, call) -> StepResult:
 
 
 @lm(
-    oai,
+    llm,
     system_prompt=(
         "The previous extraction attempt was not a valid ISO-8601 date. "
         "Re-read the original text and try again. Return ONLY YYYY-MM-DD."

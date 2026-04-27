@@ -170,8 +170,8 @@ issues = check_skill(skill)
 ## Examples
 
 ```bash
-# deterministic + LLM date extraction with retry
-OPENAI_API_KEY=sk-... uv run examples/readme.py
+# deterministic + LLM date extraction with retry (uses litellm)
+uv run examples/date_extraction.py
 
 # calendar booking: regex parsers + LLM verifier
 uv run examples/calendar_booking.py
