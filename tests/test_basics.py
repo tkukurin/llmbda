@@ -109,6 +109,63 @@ def test_duplicate_step_names_raise_before_running():
     assert called == []
 
 
+def test_duplicate_outer_trace_names_raise_before_running():
+    called: list[str] = []
+
+    def _step(_ctx):
+        called.append("ran")
+        return StepResult(value=None)
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("same", fn=_step, steps=[Skill("child", fn=_step)]),
+            Skill("same", fn=_step),
+        ],
+    )
+    with pytest.raises(ValueError, match="same"):
+        list(iter_skill(skill, {}))
+    assert called == []
+
+
+def test_duplicate_orchestrator_child_names_raise_before_running():
+    called: list[str] = []
+
+    def _step(_ctx):
+        called.append("ran")
+        return StepResult(value=None)
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill(
+                "orch",
+                fn=_step,
+                steps=[Skill("same", fn=_step), Skill("same", fn=_step)],
+            ),
+        ],
+    )
+    with pytest.raises(ValueError, match="same"):
+        list(iter_skill(skill, {}))
+    assert called == []
+
+
+def test_same_name_allowed_across_outer_and_orchestrator_child_scopes():
+    def _step(_ctx):
+        return StepResult(value="ok")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("same", fn=_step),
+            Skill("orch", fn=_step, steps=[Skill("same", fn=_step)]),
+        ],
+    )
+    result = run_skill(skill, {})
+    assert result.resolved_by == "orch"
+    assert list(result.trace) == ["same", "orch"]
+
+
 def test_empty_skill():
     skill = Skill(name="noop")
     result = run_skill(skill, {"x": 1})

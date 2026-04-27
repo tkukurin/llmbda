@@ -7,10 +7,15 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
+from importlib.metadata import PackageNotFoundError, version as _package_version
 from typing import Any, Protocol
 
 from tk.llmbda._check import _leaves, check_skill
-from tk.llmbda._version import __version__
+
+try:
+    __version__ = _package_version("tk-llmbda")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 
 class LMCaller(Protocol):
@@ -101,26 +106,59 @@ def lm(
     return decorator
 
 
-def _all_names(skill: Skill) -> list[str]:
-    """All names written to ctx.trace by this skill tree."""
+def _trace_names(skill: Skill) -> list[str]:
+    """Names written to the current ctx.trace scope."""
     if skill.fn:
         return [skill.name]
-    names: list[str] = []
-    for child in skill.steps:
-        names.extend(_all_names(child))
-    return names
+    return [name for child in skill.steps for name in _trace_names(child)]
+
+
+def _duplicate_names(names: list[str]) -> list[str]:
+    """Names that appear more than once."""
+    return [name for name, n in Counter(names).items() if n > 1]
+
+
+def _child_scope_duplicates(skill: Skill) -> list[str]:
+    """Duplicate names in orchestrator child trace scopes."""
+    return [
+        duplicate
+        for child in skill.steps
+        for duplicate in (
+            _duplicate_trace_names(Skill(name=child.name, steps=child.steps))
+            if child.fn and child.steps
+            else _child_scope_duplicates(child)
+        )
+    ]
+
+
+def _duplicate_trace_names(skill: Skill) -> list[str]:
+    """Duplicate names per trace scope."""
+    child_scope = (
+        _duplicate_names(_trace_names(Skill(name=skill.name, steps=skill.steps)))
+        if skill.fn and skill.steps
+        else []
+    )
+    return [
+        *_duplicate_names(_trace_names(skill)),
+        *child_scope,
+        *_child_scope_duplicates(skill),
+    ]
 
 
 def _walk(skill: Skill, ctx: SkillContext):
     """DFS walk yielding (name, result). Returns resolved bool."""
     if skill.fn:
-        if skill.steps:
-            prev_skills, ctx.skills = ctx.skills, skill.steps
-        try:
-            result = skill.fn(ctx)
-        finally:
-            if skill.steps:
-                ctx.skills = prev_skills
+        call_ctx = (
+            SkillContext(
+                entry=ctx.entry,
+                skills=skill.steps,
+                trace=ctx.trace,
+                prev=ctx.prev,
+            )
+            if skill.steps
+            else ctx
+        )
+        result = skill.fn(call_ctx)
         ctx.trace[skill.name] = result
         ctx.prev = result
         resolved = result.resolved
@@ -135,9 +173,8 @@ def _walk(skill: Skill, ctx: SkillContext):
 
 def iter_skill(skill: Skill, entry: Any) -> Iterator[tuple[str, StepResult]]:
     """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
-    names = _all_names(skill)
-    if dups := [k for k, n in Counter(names).items() if n > 1]:
-        raise ValueError(dups)
+    if duplicates := _duplicate_trace_names(skill):
+        raise ValueError(duplicates)
     ctx = SkillContext(entry=entry, skills=_leaves(skill))
     yield from _walk(skill, ctx)
 
