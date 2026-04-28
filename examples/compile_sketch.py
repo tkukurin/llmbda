@@ -1,3 +1,13 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "litellm>=1.0",
+#     "tk-llmbda",
+# ]
+#
+# [tool.uv.sources]
+# tk-llmbda = { path = "../", editable = true }
+# ///
 # %% [markdown]
 # # Compile sketch
 #
@@ -353,6 +363,8 @@ if __name__ == "__main__":
     import json
     import re
 
+    from litellm import completion
+
     from tk.llmbda import (
         LMCaller,
         SkillContext,
@@ -361,6 +373,12 @@ if __name__ == "__main__":
         run_skill,
         strip_fences,
     )
+
+    MODEL = "gpt-4o-mini"
+
+    def call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
+        resp = completion(model=MODEL, messages=messages, **kw)
+        return resp.choices[0].message.content
 
     WEEKDAYS = (
         "monday",
@@ -392,16 +410,13 @@ if __name__ == "__main__":
         """Find a topic phrase introduced by 'about' or 're:'."""
         return StepResult(None, {"reason": "no_topic"})
 
-    def fake(*, messages: list[dict[str, str]], **_kw: Any) -> str:  # noqa: ARG001
-        return "{}"
-
     VERIFY_PROMPT = (
         "You are a calendar booking verifier. Cross-check the prior "
         "findings against the text: confirm, correct, fill gaps, "
-        "flag ambiguity."
+        "flag ambiguity. Respond with a JSON object."
     )
 
-    @lm(fake, system_prompt=VERIFY_PROMPT)
+    @lm(call_lm, system_prompt=VERIFY_PROMPT)
     def verify(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
         """Cross-check parser extractions against the raw text."""
         inner = Skill(name="_parse", steps=steps)
@@ -420,7 +435,10 @@ if __name__ == "__main__":
                 ],
             }
         )
-        raw = call(messages=[{"role": "user", "content": payload}])
+        raw = call(
+            messages=[{"role": "user", "content": payload}],
+            response_format={"type": "json_object"},
+        )
         return StepResult(json.loads(strip_fences(raw)))
 
     book_meeting = Skill(
@@ -435,6 +453,14 @@ if __name__ == "__main__":
     )
 
     print(compile_skill(book_meeting))
+
+    result = run_skill(
+        book_meeting, text="Let's meet Thursday at 3pm about Q3 planning"
+    )
+    assert isinstance(result.value, dict)  # LLM verify returns parsed JSON
+    assert "book_meeting" in result.trace  # orchestrator is a single trace entry
+    print("book_meeting result:", result.value)
+
     print("=" * 60)
 
     # %% [markdown]
@@ -443,7 +469,7 @@ if __name__ == "__main__":
     # %%
     _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
-    @lm(fake, system_prompt="Extract a date from the text. Return ONLY ISO-8601.")
+    @lm(call_lm, system_prompt="Extract a date from the text. Return ONLY ISO-8601.")
     def extract_date_lm(ctx: SkillContext, call: Any) -> StepResult:
         """Extract a date via LLM."""
         raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
@@ -483,3 +509,8 @@ if __name__ == "__main__":
     )
 
     print(compile_skill(dates_skill))
+
+    result = run_skill(dates_skill, text="Let's meet on the 15th of January 2025")
+    assert _ISO_RE.fullmatch(str(result.value)), f"{result.value=}"
+    assert result.metadata.get("valid") is True  # deterministic validate confirms
+    print("dates result:", result.value, "attempts:", result.metadata.get("attempts"))

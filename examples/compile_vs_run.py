@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "openai>=2.32.0",
+#     "litellm>=1.0",
 #     "tk-llmbda",
 # ]
 #
@@ -14,7 +14,7 @@
 # Side-by-side comparison of two execution paths for the same skill:
 #
 # - **Programmatic** — `run_skill` executes deterministic fns as Python
-#   and routes LLM steps through OpenAI.
+#   and routes LLM steps through litellm.
 # - **Compiled** — `compile_skill` produces a markdown document.
 #   Deterministic leaves become tool-call functions the LLM can invoke;
 #   LLM-step prompts are baked into the document the model reads.
@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from litellm import completion
 
 from tk.llmbda import (
     LMCaller,
@@ -48,12 +48,11 @@ from compile_sketch import _collect_leaves, _is_lm, _sanitize, compile_skill
 # ## Shared setup
 
 # %%
-client = OpenAI()
 MODEL = "gpt-4o-mini"
 
 
-def oai(*, messages: list[dict[str, str]], **kwargs: Any) -> str:
-    resp = client.chat.completions.create(model=MODEL, messages=messages, **kwargs)
+def call_lm(*, messages: list[dict[str, str]], **kwargs: Any) -> str:
+    resp = completion(model=MODEL, messages=messages, **kwargs)
     return resp.choices[0].message.content or ""
 
 
@@ -154,7 +153,7 @@ def _prior_payload(
     ]
 
 
-@lm(oai, system_prompt=VERIFY_PROMPT)
+@lm(call_lm, system_prompt=VERIFY_PROMPT)
 def verify(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
     """Cross-check parser extractions against the raw text."""
     inner = Skill(name="_parse", steps=steps)
@@ -213,7 +212,7 @@ def build_tools(
     skill: Skill,
     entry: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Build OpenAI tool specs and a dispatch table from deterministic leaves."""
+    """Build tool specs and a dispatch table from deterministic leaves."""
     tools: list[dict[str, Any]] = []
     dispatch: dict[str, Any] = {}
     for leaf in _collect_leaves(skill):
@@ -255,7 +254,7 @@ def run_compiled(
         {"role": "user", "content": entry["text"]},
     ]
     for _ in range(max_rounds):
-        resp = client.chat.completions.create(
+        resp = completion(
             model=model,
             messages=messages,
             tools=tools or None,
@@ -263,7 +262,7 @@ def run_compiled(
         msg = resp.choices[0].message
         if not msg.tool_calls:
             return msg.content or ""
-        messages.append(msg)
+        messages.append(msg.model_dump())
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             if fn_name not in dispatch:
