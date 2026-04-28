@@ -1,15 +1,8 @@
-# %% [markdown]
-# # Support triage with deterministic extraction, scripted LLM steps, and repair loop
-#
-# This notebook models a small but realistic support-ticket triage pipeline.
-#
-# - Deterministic steps extract account/order IDs and urgency signals.
-# - Scripted LLM steps classify intent and draft a triage decision.
-# - A validation/repair loop catches policy violations and asks for a corrected draft.
-# - A post-loop step attaches final status, demonstrating that loops don't
-#   stop the skill.
+"""Support triage skill: deterministic extraction, scripted LLM steps, repair loop.
 
-# %%
+Plain module (not a notebook). Imported by `main.py` and `scoring.py`.
+"""
+
 from __future__ import annotations
 
 import json
@@ -34,16 +27,6 @@ DRAFT = "ψ::draft"
 REFINE = "ψ::refine"
 SUMMARIZE = "λ::summarize"
 
-# %% [markdown]
-# ## Sample tickets
-#
-# The inputs are intentionally varied:
-#
-# - a duplicate billing/refund case with both account and order identifiers
-# - a production outage that should be escalated
-# - an account-access case missing an account identifier
-
-# %%
 TICKETS = [
     {
         "id": "SUP-1001",
@@ -79,10 +62,6 @@ TICKETS = [
     },
 ]
 
-# %% [markdown]
-# ## Deterministic feature extraction
-
-# %%
 _ACCOUNT_RE = re.compile(r"\bacct_[a-z0-9]+\b", re.IGNORECASE)
 _ORDER_RE = re.compile(r"\bORD-\d+\b", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
@@ -155,14 +134,6 @@ def detect_urgency(ctx: SkillContext) -> StepResult:
     return StepResult({"features": features, "score": score, "severity": severity})
 
 
-# %% [markdown]
-# ## Scripted model
-#
-# The model is deterministic so this notebook is runnable without credentials.
-# It inspects the bound system prompt to decide which role it is playing.
-
-
-# %%
 def _lm_json_call(call: LMCaller, payload: dict[str, Any]) -> tuple[Any, str]:
     """Send a JSON payload to the caller, return (parsed_response, raw_string)."""
     raw = call(messages=[{"role": "user", "content": json.dumps(payload)}])
@@ -174,7 +145,7 @@ def _read_json_user_message(messages: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def scripted_support_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
-    """Scripted LMCaller for examples."""
+    """Scripted LMCaller so this example runs without credentials."""
     system = (
         messages[0]["content"].lower()
         if messages and messages[0]["role"] == "system"
@@ -293,10 +264,6 @@ def _customer_reply(intent: str, missing_info: list[str]) -> str:
     return "Thanks for contacting support. We will review and follow up."
 
 
-# %% [markdown]
-# ## LLM-style classification and drafting steps
-
-# %%
 CLASSIFY_PROMPT = """\
 You are a support intent classifier.
 Return ONLY JSON with intent, confidence, and signals.
@@ -339,15 +306,6 @@ def draft_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
     return StepResult(parsed, {"llm_raw": raw})
 
 
-# %% [markdown]
-# ## Policy validation and repair loop
-#
-# The loop validates the latest draft. If invalid, it asks the scripted model
-# for a repaired draft and validates again. `validate_triage` returns
-# The refine step validates the draft against policy and, if invalid, asks the
-# scripted model for a corrected draft. It loops internally up to 2 times.
-
-# %%
 REPAIR_PROMPT = """\
 You are a support triage repair assistant.
 Return ONLY the corrected triage JSON. Do not add commentary.
@@ -396,13 +354,6 @@ def refine_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
     return StepResult(draft, {"valid": not issues, "issues": issues})
 
 
-# %% [markdown]
-# ## Post-refine summarize step
-#
-# Attaches a status field to the result after the refine step completes.
-
-
-# %%
 def summarize(ctx: SkillContext) -> StepResult:
     """Attach final status based on validation outcome."""
     triage = ctx.prev.value
@@ -424,40 +375,15 @@ support_triage = Skill(
     ],
 )
 
-# %% [markdown]
-# ## Run the triage skill
-
-# %%
-for ticket in TICKETS:
-    result = run_skill(support_triage, ticket)
-    print(f"\n{ticket['id']} · {ticket['subject']}")
-    print(f"resolved_by: {result.resolved_by}")
-    print(json.dumps(result.value, indent=2))
-    print(f"validation:  {result.metadata}")
-
-# %% [markdown]
-# ## Inspect one trace
-
-# %%
-result = run_skill(support_triage, TICKETS[1])
-for name, step_result in result.trace.items():
-    print(f"\n{name}")
-    print(f"value:    {json.dumps(step_result.value, indent=2)}")
-    print(f"metadata: {json.dumps(step_result.metadata, indent=2)}")
-
-# %% [markdown]
-# ## Ergonomic observations
-#
-# Building this example surfaced several framework-level issues and resolutions:
-#
-# - **`exits` replaces `resolved`.** Steps fall through by default (`exits=()`);
-#   non-empty `exits` tuple short-circuits and doubles as provenance trace.
-# - **`ctx.prev` eliminates `_latest_draft`.** The old helper picked repair's
-#   result if present, else draft's. `ctx.prev` tracks the most recently
-#   executed step automatically, giving the same result with zero boilerplate.
-# - **`_Prior` dict gives clear `KeyError` messages.** A typo like
-#   `ctx.trace["λ::normlaize"]` now reports available step names.
-# - **Step-name constants.** `NORMALIZE`, `IDENTIFIERS`, etc. — rename once,
-#   fixed everywhere. A deeper fix (declarative dependencies) is future work.
-# - **`_lm_json_call` helper.** Deduplicates the repeated JSON-assemble → call
-#   → strip_fences → json.loads pattern across all three LM steps.
+__all__ = [
+    "CLASSIFY",
+    "DRAFT",
+    "IDENTIFIERS",
+    "NORMALIZE",
+    "REFINE",
+    "SUMMARIZE",
+    "TICKETS",
+    "URGENCY",
+    "run_skill",
+    "support_triage",
+]
