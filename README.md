@@ -134,38 +134,48 @@ skill = Skill(
 - Children run in a fresh `SkillContext` (via `run_skill`), so they don't
   see the outer trace. Pass data through `entry` if needed.
 
-## Static validation
-
-`check_skill` catches trace-key typos and forward references at definition
-time via AST analysis:
+## `ctx.trace` — cross-step access by name
 
 ```python
-from tk.llmbda import check_skill
+from tk.llmbda import Skill, SkillContext, run_skill
 
-issues = check_skill(skill)
-# ["'bad_step' references undeclared trace key 'typo'"]
+def extract(ctx: SkillContext) -> str:
+    return ctx.entry["text"].upper()
+
+def summarize(ctx: SkillContext) -> str:
+    return f"extracted: {ctx.trace['extract'].value}"
+
+skill = Skill(name="pipe", steps=[
+    Skill("extract", fn=extract),
+    Skill("summarize", fn=summarize),
+])
+result = run_skill(skill, text="hello")
+# result.value == "extracted: HELLO"
 ```
 
-- Validates orchestrator children as a separate scope.
-- Checks `ctx.trace["key"]` and `ctx.trace.get("key")` patterns.
+Use `ctx.trace.get("key")` for optional lookups; missing keys raise an
+informative `KeyError`.
 
-## Concepts
+## `iter_skill` — streaming / early exit
 
-- **`Skill`** — recursive composition primitive. Leaf (`fn`), composite (`steps`), or orchestrator (`fn` + `steps`).
-- **`StepResult.resolved`** — defaults to `False`; steps fall through. Set `True` to short-circuit.
-- **`StepResult.resolved_by`** — inner resolution path as `tuple[str, ...]`. Orchestrators propagate it from nested `run_skill` calls; `SkillResult.resolved_by` prepends the step name, building a hierarchical path like `("orchestrator", "inner_step")`.
-- **Implicit `StepResult`** — step fns can return any value; non-`StepResult` returns are wrapped as `StepResult(value=x)`. Use explicit `StepResult` for `resolved`, `metadata`, or `resolved_by`.
-- **Bare callables in `steps`** — `steps=[my_fn]` auto-wraps to `Skill(name=fn.__name__, fn=my_fn)`. Use explicit `Skill(name, fn=...)` for custom names.
-- **`run_skill` / `iter_skill` kwargs** — `run_skill(skill, name="λ")` is sugar for `run_skill(skill, {"name": "λ"})`.
-- **`ctx.prev`** — most recently executed step's `StepResult`. Starts as `ROOT` (`value=None`).
-- **`ctx.trace`** — dict of all prior results keyed by step name. Raises informative `KeyError` on miss; use `.get()` for optional lookups.
-- **`ctx.entry`** — the original input passed to `run_skill`.
-- **`@lm(model, system_prompt=...)`** — binds model at decoration time. Decorated fn is `(ctx, call)` for leaves or `(ctx, steps, call)` for orchestrators; `call` prepends `system_prompt`.
-- **`Skill.description`** — human-readable summary; falls back to fn docstring. Separate from `@lm` system prompts (read those via `fn.lm_system_prompt`).
-- **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, confidence.
-- **`iter_skill`** — same as `run_skill` but yields `(name, result)` per step for streaming or early exit.
-- **`check_skill`** — static validation of trace-key references. Catches typos and forward refs.
-- **Test re-binding** — `lm(fake)(my_step.__wrapped__)` re-decorates with a different model.
+```python
+from tk.llmbda import Skill, iter_skill
+
+skill = Skill(name="s", steps=[step_a, step_b, step_c])
+for name, result in iter_skill(skill, {"x": 1}):
+    print(name, result.value)
+    if result.resolved:
+        break
+```
+
+## Test re-binding
+
+```python
+from tk.llmbda import lm
+
+fake_model = lambda *, messages, **kw: "2025-01-15"
+testable = lm(fake_model)(extract_date.__wrapped__)
+```
 
 ## Examples
 
