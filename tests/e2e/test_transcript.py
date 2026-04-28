@@ -51,7 +51,7 @@ def parse_explicit_todo(ctx: SkillContext) -> StepResult:
         return StepResult(
             value={"task": task.strip(), "owner": owner.strip()},
             metadata={"reason": "explicit_todo_match"},
-            resolved=True,
+            exits=True,
         )
     print("  -> Failed: No explicit TODO tag found.")
     return StepResult(
@@ -85,8 +85,8 @@ def _llm_extract_action(
     """Run parser children, then infer the action item via LLM on fallback."""
     inner = Skill(name="_parse", steps=steps)
     r = run_skill(inner, ctx.entry)
-    if any(sr.resolved for sr in r.trace.values()):
-        return StepResult(value=r.value, metadata=r.metadata, resolved_by=r.resolved_by)
+    if any(sr.exits for sr in r.trace.values()):
+        return StepResult(value=r.value, metadata=r.metadata, exits=r.resolved_by)
     print("[Trace] Running llm_extract_action (Fallback Triggered)")
     user_msg = json.dumps(
         {
@@ -160,7 +160,7 @@ def test_parse_explicit_todo_found():
     )
     result = parse_explicit_todo(ctx)
     assert result.value == {"task": "ship the release", "owner": "Alice"}
-    assert result.resolved is True
+    assert bool(result.exits)
     assert result.metadata["reason"] == "explicit_todo_match"
 
 
@@ -170,7 +170,7 @@ def test_parse_explicit_todo_missing():
     )
     result = parse_explicit_todo(ctx)
     assert result.value is None
-    assert result.resolved is False
+    assert not result.exits
     assert result.metadata["reason"] == "no_explicit_todo"
 
 

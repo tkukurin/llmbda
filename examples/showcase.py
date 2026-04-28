@@ -69,10 +69,10 @@ assert r.value == "10 -> 20"
 print(f"2. {r.value}")
 
 # %% [markdown]
-# ## 3. Short-circuit with resolved=True
+# ## 3. Short-circuit with exits
 #
-# Steps fall through by default (`resolved=False`). Setting `resolved=True`
-# skips remaining steps.
+# Steps fall through by default (`exits=()`). Setting `exits=True`
+# short-circuits and auto-names via caller reflection.
 
 
 # %%
@@ -81,7 +81,7 @@ def try_cache(ctx: SkillContext) -> StepResult:
     cache = {"known-key": "cached-value"}
     key = ctx.entry.get("key")
     if key in cache:
-        return StepResult(value=cache[key], resolved=True)
+        return StepResult(value=cache[key], exits=True)
     return StepResult(value=None, metadata={"reason": "cache_miss"})
 
 
@@ -134,7 +134,7 @@ print(f"4. {r.value}")
 def extract_date_regex(ctx: SkillContext) -> StepResult:
     """Try regex before calling the LLM."""
     if m := _ISO_RE.search(ctx.entry["text"]):
-        return StepResult(value=m.group(0), metadata={"source": "regex"}, resolved=True)
+        return StepResult(value=m.group(0), metadata={"source": "regex"}, exits=True)
     return StepResult(value=None, metadata={"reason": "no_match"})
 
 
@@ -263,12 +263,12 @@ def retry_extract_verify(ctx: SkillContext, steps: list[Skill]) -> StepResult:
             return StepResult(
                 value=r.value,
                 metadata={"valid": True, "attempts": attempt},
-                resolved_by=r.resolved_by,
+                exits=r.resolved_by,
             )
     return StepResult(
         value=r.value,
         metadata={"valid": False, "attempts": 3},
-        resolved_by=r.resolved_by,
+        exits=r.resolved_by,
     )
 
 

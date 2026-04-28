@@ -450,9 +450,8 @@ for name, step_result in result.trace.items():
 #
 # Building this example surfaced several framework-level issues and resolutions:
 #
-# - **`resolved` defaults to `False`.** Steps fall through by default; only
-#   intentional control flow (`resolved=True`) short-circuits or breaks loops.
-#   Eliminates `resolved=False` noise from every intermediate step.
+# - **`exits` replaces `resolved`.** Steps fall through by default (`exits=()`);
+#   non-empty `exits` tuple short-circuits and doubles as provenance trace.
 # - **`ctx.prev` eliminates `_latest_draft`.** The old helper picked repair's
 #   result if present, else draft's. `ctx.prev` tracks the most recently
 #   executed step automatically, giving the same result with zero boilerplate.

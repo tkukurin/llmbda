@@ -49,7 +49,7 @@ def parse_minutes(ctx: SkillContext) -> StepResult:
         return StepResult(
             value=mins,
             metadata={"reason": "matched_minutes"},
-            resolved=True,
+            exits=True,
         )
     print("  -> Failed: No minute regex match.")
     return StepResult(
@@ -69,7 +69,7 @@ def parse_hours(ctx: SkillContext) -> StepResult:
         return StepResult(
             value=mins,
             metadata={"reason": "matched_hours"},
-            resolved=True,
+            exits=True,
         )
     print("  -> Failed: No hour regex match.")
     return StepResult(value=None, metadata={"reason": "no_hour_match"})
@@ -96,8 +96,8 @@ def _llm_diagnose(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> Step
     """Run parser children, fall back to LLM when none resolve."""
     inner = Skill(name="_parse", steps=steps)
     r = run_skill(inner, ctx.entry)
-    if any(sr.resolved for sr in r.trace.values()):
-        return StepResult(value=r.value, metadata=r.metadata, resolved_by=r.resolved_by)
+    if any(sr.exits for sr in r.trace.values()):
+        return StepResult(value=r.value, metadata=r.metadata, exits=r.resolved_by)
     print("[Trace] Running Step 3: llm_diagnose (Fallback Triggered)")
     user_msg = json.dumps(
         {
@@ -171,7 +171,7 @@ def test_parse_minutes_found():
     ctx = SkillContext(entry={"text": "Bake for 30 mins."})
     result = parse_minutes(ctx)
     assert result.value == 30
-    assert result.resolved is True
+    assert result.exits is True
     assert result.metadata["reason"] == "matched_minutes"
 
 
@@ -179,7 +179,7 @@ def test_parse_minutes_missing():
     ctx = SkillContext(entry={"text": "Bake until golden."})
     result = parse_minutes(ctx)
     assert result.value is None
-    assert result.resolved is False
+    assert not result.exits
     assert result.metadata["reason"] == "no_minute_match"
 
 
@@ -187,21 +187,21 @@ def test_parse_hours_integer():
     ctx = SkillContext(entry={"text": "Roast for 2 hours."})
     result = parse_hours(ctx)
     assert result.value == 120
-    assert result.resolved is True
+    assert result.exits is True
 
 
 def test_parse_hours_decimal():
     ctx = SkillContext(entry={"text": "Roast for 1.5 hours."})
     result = parse_hours(ctx)
     assert result.value == 90
-    assert result.resolved is True
+    assert result.exits is True
 
 
 def test_parse_hours_missing():
     ctx = SkillContext(entry={"text": "Bake for 5 minutes."})
     result = parse_hours(ctx)
     assert result.value is None
-    assert result.resolved is False
+    assert not result.exits
 
 
 def test_llm_diagnose_parses_json():

@@ -53,7 +53,7 @@ def test_single_step():
 
 def test_resolved_short_circuits():
     def _resolver(_ctx):
-        return StepResult(value="stopped", resolved=True)
+        return StepResult(value="stopped", exits=True)
 
     def _unreachable(_ctx):
         msg = "should not be called"
@@ -206,7 +206,7 @@ def test_iter_yields_each_step_in_order():
 
 def test_iter_stops_after_resolved():
     def _stop(_ctx):
-        return StepResult(value="done", resolved=True)
+        return StepResult(value="done", exits=True)
 
     def _never(_ctx):
         msg = "should not run"
@@ -224,7 +224,7 @@ def test_iter_stop_decision_survives_result_mutation():
     called: list[str] = []
 
     def _stop(_ctx):
-        return StepResult(value="done", resolved=True)
+        return StepResult(value="done", exits=True)
 
     def _never(_ctx):
         called.append("never")
@@ -238,7 +238,7 @@ def test_iter_stop_decision_survives_result_mutation():
     name, result = next(it)
     assert name == "stop"
 
-    result.resolved = False
+    result.exits = ()
 
     with pytest.raises(StopIteration):
         next(it)
@@ -464,9 +464,9 @@ def test_lm_rebinds_between_steps():
     ]
 
 
-def test_resolved_defaults_to_false():
+def test_exits_defaults_to_empty():
     r = StepResult(value=42)
-    assert r.resolved is False
+    assert r.exits == ()
 
 
 def test_prev_is_root_initially():
@@ -552,7 +552,7 @@ def test_explicit_step_result_still_works():
     """Ensure explicit StepResult isn't double-wrapped."""
 
     def resolve(_):
-        return StepResult(value="x", resolved=True)
+        return StepResult(value="x", exits=True)
 
     skill = Skill(name="s", steps=[Skill("a", fn=resolve)])
     result = run_skill(skill, {})

@@ -27,12 +27,11 @@ class LMCaller(Protocol):
 
 @dataclass
 class StepResult:
-    """Skill output. resolved=True short-circuits the remaining sequence."""
+    """Skill output. Truthy `exits` short-circuits the remaining sequence."""
 
     value: Any
     metadata: dict[str, Any] = field(default_factory=dict)
-    resolved: bool = False
-    resolved_by: tuple[str, ...] = ()
+    exits: tuple[str, ...] | bool = ()
 
 
 ROOT = StepResult(value=None)  # sentinel
@@ -151,13 +150,13 @@ def _dup_trace_names(skill: Skill) -> list[str]:
 
 
 def _walk(skill: Skill, ctx: SkillContext):
-    """DFS walk yielding (name, result). Returns resolved bool."""
+    """DFS walk yielding (name, result). Stops on truthy exits."""
     if skill.fn:
         result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
         if not isinstance(result, StepResult):
             result = StepResult(value=result)
         ctx.trace[skill.name] = ctx.prev = result
-        resolved = result.resolved
+        resolved = bool(result.exits)
         yield skill.name, result
         return resolved
     for child in skill.steps:
@@ -178,7 +177,7 @@ def iter_skill(
     entry: Any = None,
     **kwargs: Any,
 ) -> Iterator[tuple[str, StepResult]]:
-    """Yield (name, result) per executed skill. Stops on resolved=True or after last."""
+    """Yield (name, result) per executed skill. Stops on truthy exits or after last."""
     if duplicates := _dup_trace_names(skill):
         raise ValueError(duplicates)
     ctx = SkillContext(entry=_make_entry(entry, kwargs))
@@ -190,9 +189,10 @@ def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> SkillResult:
     if not (trace := dict(iter_skill(skill, _make_entry(entry, kwargs)))):
         return SkillResult(skill=skill.name, resolved_by=(), value=None)
     last_name, last = next(reversed(trace.items()))
+    trail = last.exits if isinstance(last.exits, tuple) else ()
     return SkillResult(
         skill=skill.name,
-        resolved_by=(last_name, *last.resolved_by),
+        resolved_by=(last_name, *trail),
         value=last.value,
         metadata=last.metadata,
         trace=trace,

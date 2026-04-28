@@ -55,7 +55,7 @@ def test_loop_leaf_can_absorb_internal_resolution():
 
 def test_loop_leaf_resolved_short_circuits_sequence():
     def loop_fn(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="done", resolved=True)
+        return StepResult(value="done", exits=True)
 
     def unreachable(_ctx: SkillContext) -> StepResult:
         msg = "should not run"

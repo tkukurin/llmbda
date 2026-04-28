@@ -22,7 +22,7 @@ _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 def extract_date_regex(ctx: SkillContext) -> StepResult:
     """Pull an ISO-8601 date via regex."""
     if m := _ISO_RE.search(ctx.entry["text"]):
-        return StepResult(m.group(1), {"source": "regex"}, resolved=True)
+        return StepResult(m.group(1), {"source": "regex"}, exits=True)
     return StepResult(None, {"reason": "no_iso_date"})
 
 
