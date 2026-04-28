@@ -10,3 +10,5 @@ build/
 _version.py
 uv.lock
 .coverage
+logs/
+.pytest_cache/

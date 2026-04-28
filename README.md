@@ -188,11 +188,58 @@ uv run examples/date_extraction.py
 uv run examples/calendar_booking.py
 
 # support triage: extraction, classification, validation loop
-uv run examples/support_triage.py
+uv run examples/triage/main.py
+
+# same skill, scored step-by-step with Inspect AI (see section below)
+uv run examples/triage/scoring.py
 
 # all 20 use cases in one file (no external deps)
 uv run examples/showcase.py
 ```
+
+## Inspect AI integration
+
+Score individual steps of a skill with [Inspect AI](https://inspect.aisi.org.uk/) scorers.
+
+- `skill_solver(skill)` wraps a skill as an Inspect `Solver`. Final `result.value` becomes the completion; full trace lands in `state.metadata["llmbda.trace"]`.
+- `step_scorer(name, inner)` adapts any Inspect scorer to read a named step's value instead of the final completion.
+
+```python
+from inspect_ai import Task
+from inspect_ai.scorer import match, model_graded_qa
+from tk.llmbda.inspect import skill_solver, step_scorer
+
+Task(
+    dataset=tickets,
+    solver=skill_solver(support_triage),
+    scorer=[
+        step_scorer("λ::identifiers", match(location="any")),
+        step_scorer("ψ::draft", model_graded_qa()),
+        match(),  # final completion
+    ],
+)
+```
+
+- `entry=` on `skill_solver` customises how the skill input is extracted from `TaskState` (default: `s.input_text`).
+- `project=` on `step_scorer` stringifies non-str step values before the inner scorer sees them (default: `str`; pass `json.dumps` for dicts).
+- Metrics are inherited from the inner scorer; override with `metrics=[...]`.
+
+### Install and run
+
+- **As a library user:** `pip install tk-llmbda[inspect]` — the `inspect` extra pulls in `inspect-ai`.
+- **In this repo:** `inspect-ai` is already in the dev dependency group, so `uv sync` installs it automatically.
+
+A runnable end-to-end example lives in `examples/triage/scoring.py` (the skill itself is defined in `examples/triage/skill.py` and reused by `main.py`):
+
+```bash
+# run the skill + Inspect eval (scripted model, no API keys needed)
+uv run examples/triage/scoring.py
+
+# browse per-sample traces, scorer breakdowns, and step values in the viewer
+uv run inspect view
+```
+
+Every `inspect_eval(...)` call writes a `.eval` log file under `./logs/` which `inspect view` picks up automatically.
 
 ## Development
 

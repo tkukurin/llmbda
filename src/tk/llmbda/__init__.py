@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
+import inspect as _stdlib_inspect
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -85,7 +85,7 @@ class Skill:
             for s in self.steps
         ]
         if not self.description and self.fn:
-            self.description = inspect.getdoc(self.fn) or ""
+            self.description = _stdlib_inspect.getdoc(self.fn) or ""
 
 
 @dataclass
