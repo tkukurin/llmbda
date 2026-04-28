@@ -4,7 +4,7 @@
 # Four regex parsers each extract a fragment; an LLM verifier cross-checks
 # them against the raw text, fills gaps, and flags ambiguity.
 #
-# - Intermediate steps fall through by default (`resolved=False`).
+# - Intermediate steps fall through by default (`exits=()`).
 # - The verifier is an orchestrator: it receives the parser steps as its
 #   `steps` argument, runs them via `run_skill`, then cross-checks results.
 # - `@lm(model, system_prompt=...)` binds the model at decoration time, so

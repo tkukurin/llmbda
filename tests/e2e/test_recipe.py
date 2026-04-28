@@ -171,7 +171,7 @@ def test_parse_minutes_found():
     ctx = SkillContext(entry={"text": "Bake for 30 mins."})
     result = parse_minutes(ctx)
     assert result.value == 30
-    assert result.exits is True
+    assert result.exits
     assert result.metadata["reason"] == "matched_minutes"
 
 
@@ -187,14 +187,14 @@ def test_parse_hours_integer():
     ctx = SkillContext(entry={"text": "Roast for 2 hours."})
     result = parse_hours(ctx)
     assert result.value == 120
-    assert result.exits is True
+    assert result.exits
 
 
 def test_parse_hours_decimal():
     ctx = SkillContext(entry={"text": "Roast for 1.5 hours."})
     result = parse_hours(ctx)
     assert result.value == 90
-    assert result.exits is True
+    assert result.exits
 
 
 def test_parse_hours_missing():

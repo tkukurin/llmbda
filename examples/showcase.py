@@ -69,10 +69,10 @@ assert r.value == "10 -> 20"
 print(f"2. {r.value}")
 
 # %% [markdown]
-# ## 3. Short-circuit with exits
+# ## 3. Short-circuit with `exits`
 #
 # Steps fall through by default (`exits=()`). Setting `exits=True`
-# short-circuits and auto-names via caller reflection.
+# skips remaining steps.
 
 
 # %%

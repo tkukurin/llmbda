@@ -12,7 +12,7 @@ from tk.llmbda import (
 
 def test_clean_linear_skill():
     def first(_ctx: SkillContext) -> StepResult:
-        return StepResult(value=1, resolved=False)
+        return StepResult(value=1)
 
     def second(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.trace["first"].value + 1)
@@ -48,7 +48,7 @@ def test_catches_unknown_prior_get_key():
 
 def test_step_cannot_reference_later_step():
     def first(ctx: SkillContext) -> StepResult:
-        return StepResult(value=ctx.trace["second"].value, resolved=False)
+        return StepResult(value=ctx.trace["second"].value)
 
     def second(_ctx: SkillContext) -> StepResult:
         return StepResult(value=2)
@@ -98,7 +98,7 @@ def test_nested_composite_later_group_sees_earlier():
 
 def test_unicode_step_names():
     def first(_ctx: SkillContext) -> StepResult:
-        return StepResult(value=1, resolved=False)
+        return StepResult(value=1)
 
     def second(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.trace["λ::first"].value)
@@ -114,7 +114,7 @@ def test_unicode_step_name_typo():
     def bad(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.trace["λ::extract"].value)
 
-    extract = lambda _: StepResult(value=1, resolved=False)  # noqa: E731
+    extract = lambda _: StepResult(value=1)  # noqa: E731
     skill = Skill(
         name="s",
         steps=[Skill("ψ::extract", fn=extract), Skill("bad", fn=bad)],

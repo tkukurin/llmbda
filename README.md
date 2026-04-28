@@ -1,7 +1,7 @@
 # tk.llmbda
 
 Skill composition for LLM pipelines. Chain deterministic and LLM-powered
-steps into a skill; the runtime walks them in order until one resolves.
+steps into a skill; the runtime walks them in order until one exits.
 
 ## Deterministic skill
 
@@ -63,15 +63,15 @@ result = run_skill(skill, x=5)
 Before any step runs, `ctx.prev` is the `ROOT` sentinel (`ROOT.value is None`).
 Use `ctx.prev is ROOT` to check if you're the first step.
 
-## Short-circuit with `resolved=True`
+## Short-circuit with `exits`
 
-Steps fall through by default (`resolved=False`). Set `resolved=True` to
+Steps fall through by default (`exits=()`). Set `exits=True` to
 stop early — remaining steps are skipped:
 
 ```python
 def try_cache(ctx: SkillContext) -> StepResult:
     if ctx.entry.get("key") in CACHE:
-        return StepResult(value=CACHE[ctx.entry["key"]], resolved=True)
+        return StepResult(value=CACHE[ctx.entry["key"]], exits=True)
     return StepResult(value=None)
 
 def expensive(ctx: SkillContext) -> StepResult:
@@ -81,7 +81,8 @@ skill = Skill(name="s", steps=[Skill("cache", fn=try_cache), Skill("compute", fn
 # run_skill(skill, key="known-key")
 ```
 
-Use explicit `StepResult` when you need `resolved`, `metadata`, or `resolved_by`.
+Use explicit `StepResult` when you need `exits` or `metadata`.
+Orchestrators can pass a tuple for provenance: `exits=("child_name",)`.
 
 ## Nested composition
 
@@ -117,8 +118,8 @@ def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
     for attempt in range(1, 4):
         r = run_skill(inner, ctx.entry)
         if r.metadata.get("valid"):
-            return StepResult(value=r.value, metadata={"attempts": attempt}, resolved_by=r.resolved_by)
-    return StepResult(value=r.value, metadata={"valid": False}, resolved_by=r.resolved_by)
+            return StepResult(value=r.value, metadata={"attempts": attempt}, exits=r.resolved_by)
+    return StepResult(value=r.value, metadata={"valid": False}, exits=r.resolved_by)
 
 skill = Skill(
     name="retry",
@@ -164,7 +165,7 @@ from tk.llmbda import Skill, iter_skill
 skill = Skill(name="s", steps=[step_a, step_b, step_c])
 for name, result in iter_skill(skill, {"x": 1}):
     print(name, result.value)
-    if result.resolved:
+    if result.exits:
         break
 ```
 

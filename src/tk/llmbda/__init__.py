@@ -33,6 +33,10 @@ class StepResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     exits: tuple[str, ...] | bool = ()
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.exits, tuple):
+            self.exits = ("self",) if self.exits else ()
+
 
 ROOT = StepResult(value=None)  # sentinel
 
@@ -156,9 +160,9 @@ def _walk(skill: Skill, ctx: SkillContext):
         if not isinstance(result, StepResult):
             result = StepResult(value=result)
         ctx.trace[skill.name] = ctx.prev = result
-        resolved = bool(result.exits)
+        exited = bool(result.exits)
         yield skill.name, result
-        return resolved
+        return exited
     for child in skill.steps:
         if (yield from _walk(child, ctx)):
             return True
@@ -189,7 +193,7 @@ def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> SkillResult:
     if not (trace := dict(iter_skill(skill, _make_entry(entry, kwargs)))):
         return SkillResult(skill=skill.name, resolved_by=(), value=None)
     last_name, last = next(reversed(trace.items()))
-    trail = last.exits if isinstance(last.exits, tuple) else ()
+    trail = last.exits[:-1] if last.exits[-1:] == ("self",) else last.exits
     return SkillResult(
         skill=skill.name,
         resolved_by=(last_name, *trail),
