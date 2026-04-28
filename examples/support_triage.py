@@ -174,7 +174,7 @@ def _read_json_user_message(messages: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def scripted_support_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
-    """OpenAI-shaped deterministic caller for examples."""
+    """Scripted LMCaller for examples."""
     system = (
         messages[0]["content"].lower()
         if messages and messages[0]["role"] == "system"

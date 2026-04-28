@@ -106,7 +106,7 @@ def parse_topic(ctx: SkillContext) -> StepResult:
 # ## Scripted caller
 #
 # Defined before the LLM step so `@lm(...)` can capture it at decoration time.
-# Real usage swaps this for an OpenAI-style caller (see README).
+# Real usage swaps this for a litellm caller (see README).
 
 # %%
 _CANNED = {
@@ -144,7 +144,7 @@ _DEFAULT = {
 
 
 def scripted_caller(*, messages: list[dict[str, str]], **_kw: object) -> str:
-    """Pretend to be an OpenAI caller; returns a JSON string."""
+    """Scripted LMCaller for examples; returns a JSON string."""
     user_msg = messages[1]["content"]
     for key, payload in _CANNED.items():
         if key in user_msg:

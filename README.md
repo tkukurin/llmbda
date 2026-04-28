@@ -23,19 +23,19 @@ the `ctx.entry` dict.
 
 ## LLM skill
 
-Self-contained with a fake model so the snippet runs as-is:
-
 ```python
+from litellm import completion
 from tk.llmbda import Skill, SkillContext, StepResult, lm, run_skill
 
-def fake_model(*, messages, **_):
-    return "2025-01-15"
+def call_lm(*, messages, **kw):
+    resp = completion(model="gpt-4o-mini", messages=messages, **kw)
+    return resp.choices[0].message.content
 
-@lm(fake_model, system_prompt="Extract a date. Return ISO format.")
+@lm(call_lm, system_prompt="Extract a date. Return ISO format.")
 def extract_date(ctx: SkillContext, call) -> StepResult:
     """Extract a date from natural language."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
-    return StepResult(value=raw)
+    return StepResult(value=raw.strip())
 
 skill = Skill(name="dates", steps=[Skill("extract", fn=extract_date)])
 result = run_skill(skill, text="let's meet on the 15th of January 2025")
