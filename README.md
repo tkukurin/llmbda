@@ -1,19 +1,20 @@
 # tk.llmbda
 
 Skill composition for LLM pipelines. Chain deterministic and LLM-powered
-steps into a skill; the runtime walks them in order until one exits.
+steps into a skill; the runtime walks them in order and returns an ordered
+trace dict.
 
 ## Deterministic skill
 
 ```python
-from tk.llmbda import Skill, SkillContext, run_skill
+from tk.llmbda import Skill, SkillContext, last, run_skill
 
 def greet(ctx: SkillContext) -> str:
     return f"hello, {ctx.entry.get('name', 'world')}"
 
 skill = Skill(name="greeter", steps=[greet])
-result = run_skill(skill, name="λ")
-# SkillResult(skill="greeter", resolved_by=("greet",), value="hello, λ", ...)
+trace = run_skill(skill, name="λ")
+# last(trace).value == "hello, λ"
 ```
 
 Step fns that return a non-`StepResult` are auto-wrapped as
@@ -25,7 +26,7 @@ the `ctx.entry` dict.
 
 ```python
 from litellm import completion
-from tk.llmbda import Skill, SkillContext, StepResult, lm, run_skill
+from tk.llmbda import Skill, SkillContext, StepResult, last, lm, run_skill
 
 def call_lm(*, messages, **kw):
     resp = completion(model="gpt-4o-mini", messages=messages, **kw)
@@ -38,8 +39,8 @@ def extract_date(ctx: SkillContext, call) -> StepResult:
     return StepResult(value=raw.strip())
 
 skill = Skill(name="dates", steps=[Skill("extract", fn=extract_date)])
-result = run_skill(skill, text="let's meet on the 15th of January 2025")
-# SkillResult(skill="dates", resolved_by=("extract",), value="2025-01-15", ...)
+trace = run_skill(skill, text="let's meet on the 15th of January 2025")
+# last(trace).value == "2025-01-15"
 ```
 
 ## Multi-step with `ctx.prev`
@@ -47,7 +48,7 @@ result = run_skill(skill, text="let's meet on the 15th of January 2025")
 Each step can access the previous step's result via `ctx.prev`:
 
 ```python
-from tk.llmbda import Skill, SkillContext, run_skill
+from tk.llmbda import Skill, SkillContext, last, run_skill
 
 def double(ctx: SkillContext) -> int:
     return ctx.entry["x"] * 2
@@ -56,33 +57,65 @@ def add_ten(ctx: SkillContext) -> int:
     return ctx.prev.value + 10
 
 skill = Skill(name="math", steps=[double, add_ten])
-result = run_skill(skill, x=5)
-# result.value == 20
+trace = run_skill(skill, x=5)
+# last(trace).value == 20
 ```
 
-Before any step runs, `ctx.prev` is the `ROOT` sentinel (`ROOT.value is None`).
-Use `ctx.prev is ROOT` to check if you're the first step.
+Before any step runs, `ctx.prev` is an empty `StepResult()` (i.e.
+`ctx.prev.value is None`).
 
-## Short-circuit with `exits`
+## `run_skill` returns a `Trace`
 
-Steps fall through by default (`exits=()`). Set `exits=True` to
-stop early — remaining steps are skipped:
+`run_skill` returns an ordered dict mapping step names to their
+`StepResult`. Use `last(trace)` to get the final step's result:
 
 ```python
-def try_cache(ctx: SkillContext) -> StepResult:
-    if ctx.entry.get("key") in CACHE:
-        return StepResult(value=CACHE[ctx.entry["key"]], exits=True)
-    return StepResult(value=None)
-
-def expensive(ctx: SkillContext) -> StepResult:
-    return StepResult(value=compute(ctx.entry))
-
-skill = Skill(name="s", steps=[Skill("cache", fn=try_cache), Skill("compute", fn=expensive)])
-# run_skill(skill, key="known-key")
+trace = run_skill(skill, x=5)
+trace["double"].value   # 10
+trace["add_ten"].value  # 20
+last(trace).value       # 20
 ```
 
-Use explicit `StepResult` when you need `exits` or `metadata`.
-Orchestrators can pass a tuple for provenance: `exits=("child_name",)`.
+## Control flow via orchestrators
+
+Steps always fall through by default — every step in a flat pipeline runs.
+For early-exit, retry, or branching, use an orchestrator: a skill with
+both `fn` and `steps`. The `fn` receives children as a second argument and
+controls how they execute.
+
+### `fst_match` — built-in first-non-None orchestrator
+
+```python
+from tk.llmbda import Skill, fst_match, last, run_skill
+
+skill = Skill(
+    name="cached",
+    fn=fst_match,
+    steps=[Skill("cache", fn=try_cache), Skill("compute", fn=expensive)],
+)
+trace = run_skill(Skill(name="s", steps=[skill]), key="known-key")
+# last(trace).value == "cached-value"
+```
+
+### Custom orchestrators
+
+Retry pattern:
+
+```python
+def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+    """Run children up to 3 times until valid."""
+    inner = Skill(name="_", steps=steps)
+    for attempt in range(1, 4):
+        r = run_skill(inner, ctx.entry)
+        v = last(r)
+        if v.meta.get("valid"):
+            return StepResult(value=v.value, meta={"attempts": attempt})
+    return StepResult(value=v.value, meta={"valid": False, "attempts": 3})
+```
+
+- Leaf fns are `(ctx) -> StepResult`. Orchestrator fns are `(ctx, steps) -> StepResult`.
+- Children run in a fresh `SkillContext` (via `run_skill`), so they don't
+  see the outer trace. Pass data through `entry` if needed.
 
 ## Nested composition
 
@@ -106,35 +139,6 @@ skill = Skill(
 
 The runtime walks composites via DFS. All leaves share a single `ctx.trace`.
 
-## Orchestrator: `fn` + `steps`
-
-A skill with both `fn` and `steps` is an orchestrator — `fn` receives the
-children as an explicit second argument and controls how they execute:
-
-```python
-def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
-    """Run children up to 3 times until valid."""
-    inner = Skill(name="inner", steps=steps)
-    for attempt in range(1, 4):
-        r = run_skill(inner, ctx.entry)
-        if r.metadata.get("valid"):
-            return StepResult(value=r.value, metadata={"attempts": attempt}, exits=r.resolved_by)
-    return StepResult(value=r.value, metadata={"valid": False}, exits=r.resolved_by)
-
-skill = Skill(
-    name="retry",
-    fn=retry,
-    steps=[
-        Skill("ψ::extract", fn=extract_date_llm),
-        Skill("ψ::verify", fn=verify_date),
-    ],
-)
-```
-
-- Leaf fns are `(ctx) -> StepResult`. Orchestrator fns are `(ctx, steps) -> StepResult`.
-- Children run in a fresh `SkillContext` (via `run_skill`), so they don't
-  see the outer trace. Pass data through `entry` if needed.
-
 ## `ctx.trace` — cross-step access by name
 
 ```python
@@ -150,14 +154,14 @@ skill = Skill(name="pipe", steps=[
     Skill("extract", fn=extract),
     Skill("summarize", fn=summarize),
 ])
-result = run_skill(skill, text="hello")
-# result.value == "extracted: HELLO"
+trace = run_skill(skill, text="hello")
+# last(trace).value == "extracted: HELLO"
 ```
 
 Use `ctx.trace.get("key")` for optional lookups; missing keys raise an
 informative `KeyError`.
 
-## `iter_skill` — streaming / early exit
+## `iter_skill` — streaming / early break
 
 ```python
 from tk.llmbda import Skill, iter_skill
@@ -165,7 +169,7 @@ from tk.llmbda import Skill, iter_skill
 skill = Skill(name="s", steps=[step_a, step_b, step_c])
 for name, result in iter_skill(skill, {"x": 1}):
     print(name, result.value)
-    if result.exits:
+    if some_condition(result):
         break
 ```
 
@@ -201,8 +205,9 @@ uv run examples/showcase.py
 
 Score individual steps of a skill with [Inspect AI](https://inspect.aisi.org.uk/) scorers.
 
-- `skill_solver(skill)` wraps a skill as an Inspect `Solver`. Final `result.value` becomes the completion; full trace lands in `state.metadata["llmbda.trace"]`.
+- `skill_solver(skill)` wraps a skill as an Inspect `Solver`. Final value becomes the completion; full trace lands in `state.metadata["llmbda.trace"]`.
 - `step_scorer(name, inner)` adapts any Inspect scorer to read a named step's value instead of the final completion.
+- `step_check(name, predicate)` scores a step by applying a predicate to its `StepResult`.
 
 ```python
 from inspect_ai import Task
