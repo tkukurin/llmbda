@@ -113,16 +113,14 @@ TEST_CASES = [
     {
         "id": "T1_explicit_todo",
         "transcript": (
-            "Okay, so before we end."
-            " TODO: update the database schema @Sarah."
+            "Okay, so before we end. TODO: update the database schema @Sarah."
         ),
         "expected_val": {"task": "update the database schema", "owner": "Sarah"},
     },
     {
         "id": "T2_conversational_task",
         "transcript": (
-            "Alright, Bob, can you make sure to email"
-            " the client by tomorrow morning?"
+            "Alright, Bob, can you make sure to email the client by tomorrow morning?"
         ),
         "expected_val": {
             "task": "email the client by tomorrow morning",
