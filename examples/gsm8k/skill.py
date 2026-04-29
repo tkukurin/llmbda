@@ -43,8 +43,8 @@ def call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
 
 def parse_problem(ctx: SkillContext) -> StepResult:
     """Normalize the input question into a clean string."""
-    question = ctx.entry if isinstance(ctx.entry, str) else ctx.entry["question"]
-    return StepResult({"question": question.strip()})
+    q = ctx.entry if isinstance(ctx.entry, str) else ctx.entry["question"]
+    return StepResult(value={"question": q.strip()})
 
 
 REASON_PROMPT = """\
@@ -58,7 +58,7 @@ def reason(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Generate chain-of-thought reasoning via LLM."""
     question = ctx.trace[PARSE].value["question"]
     raw = call(messages=[{"role": "user", "content": question}])
-    return StepResult({"reasoning": raw.strip()})
+    return StepResult(value={"reasoning": raw.strip()})
 
 
 def extract_answer(ctx: SkillContext) -> StepResult:
@@ -71,8 +71,8 @@ def extract_answer(ctx: SkillContext) -> StepResult:
         numbers = _NUMBER_RE.findall(reasoning)
         answer = numbers[-1].replace(",", "") if numbers else ""
     return StepResult(
-        {"answer": answer, "reasoning": reasoning},
-        {"extracted_from": "####" if m else "fallback"},
+        value={"answer": answer, "reasoning": reasoning},
+        meta={"extracted_from": "####" if m else "fallback"},
     )
 
 
@@ -90,8 +90,8 @@ def verify_arithmetic(ctx: SkillContext) -> StepResult:
             pass
     prev = ctx.trace[EXTRACT].value
     return StepResult(
-        {"answer": prev["answer"], "reasoning": reasoning},
-        {"valid": len(errors) == 0, "errors": errors},
+        value={"answer": prev["answer"], "reasoning": reasoning},
+        meta={"valid": len(errors) == 0, "errors": errors},
     )
 
 
@@ -118,10 +118,10 @@ End with #### followed by the corrected final numeric answer."""
 def repair(ctx: SkillContext, call: LMCaller) -> StepResult:
     """Re-prompt LLM to fix arithmetic errors found by verify step."""
     prev = ctx.prev
-    if prev.metadata.get("valid", True):
-        return StepResult(prev.value, {**prev.metadata, "repaired": False})
+    if prev.meta.get("valid", True):
+        return StepResult(value=prev.value, meta={**prev.meta, "repaired": False})
     question = ctx.trace[PARSE].value["question"]
-    errors = prev.metadata["errors"]
+    errors = prev.meta["errors"]
     prompt = (
         f"Question: {question}\n\n"
         f"Previous reasoning:\n{prev.value['reasoning']}\n\n"
@@ -135,8 +135,8 @@ def repair(ctx: SkillContext, call: LMCaller) -> StepResult:
         else prev.value["answer"]
     )
     return StepResult(
-        {"answer": answer, "reasoning": raw.strip()},
-        {"repaired": True, "original_errors": errors},
+        value={"answer": answer, "reasoning": raw.strip()},
+        meta={"repaired": True, "original_errors": errors},
     )
 
 

@@ -59,7 +59,7 @@ extraction_match = step_scorer(
 
 final_match = step_scorer(REPAIR, match(numeric=True), project=lambda v: v["answer"])
 
-arithmetic_validity = step_check(VERIFY, lambda r: r.metadata.get("valid", False))
+arithmetic_validity = step_check(VERIFY, lambda r: r.meta.get("valid", False))
 
 
 # %%
