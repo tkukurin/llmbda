@@ -84,7 +84,7 @@ def normalize_ticket(ctx: SkillContext) -> StepResult:
     ticket = ctx.entry
     text = f"{ticket['subject']}\n\n{ticket['body']}"
     return StepResult(
-        {
+        value={
             "id": ticket["id"],
             "channel": ticket["channel"],
             "customer_tier": ticket["customer_tier"],
@@ -103,7 +103,7 @@ def extract_identifiers(ctx: SkillContext) -> StepResult:
         "emails": sorted({m.group(0).lower() for m in _EMAIL_RE.finditer(text)}),
     }
     missing = [name for name, values in identifiers.items() if not values]
-    return StepResult(identifiers, {"missing": missing})
+    return StepResult(value=identifiers, meta={"missing": missing})
 
 
 def detect_urgency(ctx: SkillContext) -> StepResult:
@@ -131,17 +131,13 @@ def detect_urgency(ctx: SkillContext) -> StepResult:
         severity = "sev2"
     else:
         severity = "sev3"
-    return StepResult({"features": features, "score": score, "severity": severity})
+    return StepResult(value={"features": features, "score": score, "severity": severity})
 
 
 def _lm_json_call(call: LMCaller, payload: dict[str, Any]) -> tuple[Any, str]:
     """Send a JSON payload to the caller, return (parsed_response, raw_string)."""
     raw = call(messages=[{"role": "user", "content": json.dumps(payload)}])
     return json.loads(strip_fences(raw)), raw
-
-
-def _read_json_user_message(messages: list[dict[str, str]]) -> dict[str, Any]:
-    return json.loads(strip_fences(messages[-1]["content"]))
 
 
 def scripted_support_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
@@ -151,7 +147,7 @@ def scripted_support_model(*, messages: list[dict[str, str]], **_kw: Any) -> str
         if messages and messages[0]["role"] == "system"
         else ""
     )
-    payload = _read_json_user_message(messages)
+    payload = json.loads(strip_fences(messages[-1]["content"]))
     if "intent classifier" in system:
         return json.dumps(_classify_intent(payload))
     if "triage drafter" in system:
@@ -281,7 +277,7 @@ def classify_intent(ctx: SkillContext, call: LMCaller) -> StepResult:
             "urgency": ctx.trace[URGENCY].value,
         },
     )
-    return StepResult(parsed, {"llm_raw": raw})
+    return StepResult(value=parsed, meta={"llm_raw": raw})
 
 
 DRAFT_PROMPT = """\
@@ -303,7 +299,7 @@ def draft_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
             "intent": ctx.trace[CLASSIFY].value,
         },
     )
-    return StepResult(parsed, {"llm_raw": raw})
+    return StepResult(value=parsed, meta={"llm_raw": raw})
 
 
 REPAIR_PROMPT = """\
@@ -341,7 +337,7 @@ def refine_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
     for _ in range(2):
         issues = _validate_draft(draft, urgency, identifiers)
         if not issues:
-            return StepResult(draft, {"valid": True, "issues": []})
+            return StepResult(value=draft, meta={"valid": True, "issues": []})
         draft, _ = _lm_json_call(
             call,
             {
@@ -351,15 +347,15 @@ def refine_triage(ctx: SkillContext, call: LMCaller) -> StepResult:
             },
         )
     issues = _validate_draft(draft, urgency, identifiers)
-    return StepResult(draft, {"valid": not issues, "issues": issues})
+    return StepResult(value=draft, meta={"valid": not issues, "issues": issues})
 
 
 def summarize(ctx: SkillContext) -> StepResult:
     """Attach final status based on validation outcome."""
     triage = ctx.prev.value
-    valid = ctx.prev.metadata.get("valid", False)
+    valid = ctx.prev.meta.get("valid", False)
     status = "validated" if valid else "needs_review"
-    return StepResult({**triage, "status": status}, ctx.prev.metadata)
+    return StepResult(value={**triage, "status": status}, meta=ctx.prev.meta)
 
 
 support_triage = Skill(

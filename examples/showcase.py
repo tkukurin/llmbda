@@ -11,12 +11,13 @@ import re
 from typing import Any
 
 from tk.llmbda import (
-    ROOT,
     Skill,
     SkillContext,
     StepResult,
     check_skill,
+    fst_match,
     iter_skill,
+    last,
     lm,
     run_skill,
     strip_fences,
@@ -33,10 +34,10 @@ def greet(ctx: SkillContext) -> str:
 
 
 skill_greet = Skill(name="greeter", steps=[Skill("λ::greet", fn=greet)])
-r = run_skill(skill_greet, name="λ")
-assert r.value == "hello, λ"
-assert r.resolved_by == ("λ::greet",)
-print(f"1. {r.value}")
+trace = run_skill(skill_greet, name="λ")
+assert last(trace).value == "hello, λ"
+assert "λ::greet" in trace
+print(f"1. {last(trace).value}")
 
 # %% [markdown]
 # ## 2. Multi-step pipeline with ctx.prev and ctx.trace
@@ -44,7 +45,7 @@ print(f"1. {r.value}")
 
 # %%
 def double(ctx: SkillContext) -> int:
-    assert ctx.prev is ROOT
+    assert ctx.prev.value is None
     return ctx.entry["x"] * 2
 
 
@@ -64,15 +65,15 @@ skill_math = Skill(
         Skill("λ::format", fn=format_result),
     ],
 )
-r = run_skill(skill_math, x=5)
-assert r.value == "10 -> 20"
-print(f"2. {r.value}")
+trace = run_skill(skill_math, x=5)
+assert last(trace).value == "10 -> 20"
+print(f"2. {last(trace).value}")
 
 # %% [markdown]
-# ## 3. Short-circuit with `exits`
+# ## 3. Early-exit via orchestrator
 #
-# Steps fall through by default (`exits=()`). Setting `exits=True`
-# skips remaining steps.
+# Steps fall through by default. An orchestrator stops on the first
+# non-None result from its children.
 
 
 # %%
@@ -81,8 +82,8 @@ def try_cache(ctx: SkillContext) -> StepResult:
     cache = {"known-key": "cached-value"}
     key = ctx.entry.get("key")
     if key in cache:
-        return StepResult(value=cache[key], exits=True)
-    return StepResult(value=None, metadata={"reason": "cache_miss"})
+        return StepResult(value=cache[key])
+    return StepResult()
 
 
 def expensive_compute(_ctx: SkillContext) -> StepResult:
@@ -91,17 +92,16 @@ def expensive_compute(_ctx: SkillContext) -> StepResult:
 
 skill_cache = Skill(
     name="cached",
+    fn=fst_match,
     steps=[Skill("λ::cache", fn=try_cache), Skill("λ::compute", fn=expensive_compute)],
 )
 
-r_hit = run_skill(skill_cache, key="known-key")
-assert r_hit.resolved_by == ("λ::cache",)
-assert r_hit.value == "cached-value"
+trace_hit = run_skill(Skill(name="s", steps=[skill_cache]), key="known-key")
+assert last(trace_hit).value == "cached-value"
 
-r_miss = run_skill(skill_cache, key="other")
-assert r_miss.resolved_by == ("λ::compute",)
-assert r_miss.value == "computed-fresh"
-print(f"3. hit={r_hit.resolved_by}, miss={r_miss.resolved_by}")
+trace_miss = run_skill(Skill(name="s", steps=[skill_cache]), key="other")
+assert last(trace_miss).value == "computed-fresh"
+print(f"3. hit={last(trace_hit).value}, miss={last(trace_miss).value}")
 
 # %% [markdown]
 # ## 4. LLM step with @lm decorator and fake model
@@ -122,9 +122,9 @@ def extract_date(ctx: SkillContext, call) -> StepResult:
 
 
 skill_date = Skill(name="dates", steps=[Skill("ψ::extract", fn=extract_date)])
-r = run_skill(skill_date, text="let's meet on the 15th of January 2025")
-assert r.value == "2025-01-15"
-print(f"4. {r.value}")
+trace = run_skill(skill_date, text="let's meet on the 15th of January 2025")
+assert last(trace).value == "2025-01-15"
+print(f"4. {last(trace).value}")
 
 # %% [markdown]
 # ## 5. Mixed deterministic + LLM pipeline (regex-first, LLM fallback)
@@ -134,25 +134,26 @@ print(f"4. {r.value}")
 def extract_date_regex(ctx: SkillContext) -> StepResult:
     """Try regex before calling the LLM."""
     if m := _ISO_RE.search(ctx.entry["text"]):
-        return StepResult(value=m.group(0), metadata={"source": "regex"}, exits=True)
-    return StepResult(value=None, metadata={"reason": "no_match"})
+        return StepResult(value=m.group(0), meta={"source": "regex"})
+    return StepResult(meta={"reason": "no_match"})
 
 
 skill_hybrid = Skill(
     name="hybrid_dates",
+    fn=fst_match,
     steps=[
         Skill("λ::regex", fn=extract_date_regex),
         Skill("ψ::llm", fn=extract_date),
     ],
 )
 
-r_regex = run_skill(skill_hybrid, text="deadline is 2025-01-15")
-assert r_regex.resolved_by == ("λ::regex",)
-assert r_regex.metadata["source"] == "regex"
+trace_regex = run_skill(Skill(name="s", steps=[skill_hybrid]), text="deadline is 2025-01-15")
+assert last(trace_regex).value == "2025-01-15"
+assert last(trace_regex).meta["source"] == "regex"
 
-r_llm = run_skill(skill_hybrid, text="the fifteenth of January 2025")
-assert r_llm.resolved_by == ("ψ::llm",)
-print(f"5. regex={r_regex.resolved_by}, llm={r_llm.resolved_by}")
+trace_llm = run_skill(Skill(name="s", steps=[skill_hybrid]), text="the fifteenth of January 2025")
+assert last(trace_llm).value == "2025-01-15"
+print(f"5. regex={last(trace_regex).value}, llm={last(trace_llm).value}")
 
 # %% [markdown]
 # ## 6. Nested composite skills
@@ -191,11 +192,11 @@ skill_nested = Skill(
     ],
 )
 
-r = run_skill(skill_nested, text="  Hello World  ")
-assert r.value == "short"
-assert r.trace["λ::normalize"].value == "hello world"
-assert r.trace["λ::count_words"].value == 2
-print(f"6. tag={r.value}, words={r.trace['λ::count_words'].value}")
+trace = run_skill(skill_nested, text="  Hello World  ")
+assert last(trace).value == "short"
+assert trace["λ::normalize"].value == "hello world"
+assert trace["λ::count_words"].value == 2
+print(f"6. tag={last(trace).value}, words={trace['λ::count_words'].value}")
 
 # %% [markdown]
 # ## 7. Streaming execution with iter_skill
@@ -251,7 +252,7 @@ def verify_date(ctx: SkillContext) -> StepResult:
     """Check whether the extracted value is a valid ISO date."""
     value = ctx.trace["ψ::extract_date"].value
     valid = bool(value and _ISO_RE.fullmatch(str(value)))
-    return StepResult(value=value, metadata={"valid": valid})
+    return StepResult(value=value, meta={"valid": valid})
 
 
 def retry_extract_verify(ctx: SkillContext, steps: list[Skill]) -> StepResult:
@@ -259,17 +260,10 @@ def retry_extract_verify(ctx: SkillContext, steps: list[Skill]) -> StepResult:
     inner = Skill(name="inner", steps=steps)
     for attempt in range(1, 4):
         r = run_skill(inner, ctx.entry)
-        if r.metadata.get("valid"):
-            return StepResult(
-                value=r.value,
-                metadata={"valid": True, "attempts": attempt},
-                exits=r.resolved_by,
-            )
-    return StepResult(
-        value=r.value,
-        metadata={"valid": False, "attempts": 3},
-        exits=r.resolved_by,
-    )
+        v = last(r)
+        if v.meta.get("valid"):
+            return StepResult(value=v.value, meta={"valid": True, "attempts": attempt})
+    return StepResult(value=v.value, meta={"valid": False, "attempts": 3})
 
 
 _call_count = 0
@@ -281,13 +275,13 @@ skill_retry = Skill(
         Skill("λ::verify", fn=verify_date),
     ],
 )
-r = run_skill(skill_retry, text="next tuesday")
-assert r.value == "2025-06-01"
-assert r.metadata["valid"] is True
-assert r.metadata["attempts"] == 2
+trace = run_skill(Skill(name="s", steps=[skill_retry]), text="next tuesday")
+assert last(trace).value == "2025-06-01"
+assert last(trace).meta["valid"] is True
+assert last(trace).meta["attempts"] == 2
 print(
-    f"9. value={r.value}, valid={r.metadata['valid']}, "
-    f"attempts={r.metadata['attempts']}"
+    f"9. value={last(trace).value}, valid={last(trace).meta['valid']}, "
+    f"attempts={last(trace).meta['attempts']}"
 )
 
 # %% [markdown]
@@ -321,10 +315,10 @@ skill_multi_model = Skill(
     name="booking",
     steps=[Skill("ψ::classify", fn=classify), Skill("ψ::confirm", fn=confirm)],
 )
-r = run_skill(skill_multi_model, text="book Tuesday 3pm")
-assert r.value["confirmed"] is True
-assert r.trace["ψ::classify"].value["intent"] == "booking"
-print(f"10. intent={r.trace['ψ::classify'].value['intent']}, slot={r.value['slot']}")
+trace = run_skill(skill_multi_model, text="book Tuesday 3pm")
+assert last(trace).value["confirmed"] is True
+assert trace["ψ::classify"].value["intent"] == "booking"
+print(f"10. intent={trace['ψ::classify'].value['intent']}, slot={last(trace).value['slot']}")
 
 # %% [markdown]
 # ## 11. Test re-binding: swap model for testing via __wrapped__
@@ -340,10 +334,10 @@ def spy_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
 
 rewrapped = lm(spy_model, system_prompt="test prompt")(extract_date.__wrapped__)
 skill_spy = Skill(name="spy", steps=[Skill("ψ::extract", fn=rewrapped)])
-r = run_skill(skill_spy, {"text": "whenever"})
-assert r.value == "spy-date"
+trace = run_skill(skill_spy, {"text": "whenever"})
+assert last(trace).value == "spy-date"
 assert captured_messages[-1][0]["content"] == "test prompt"
-print(f"11. rewrapped value={r.value}")
+print(f"11. rewrapped value={last(trace).value}")
 
 # %% [markdown]
 # ## 12. Introspecting @lm attributes
@@ -399,9 +393,9 @@ def optional_lookup(ctx: SkillContext) -> StepResult:
 
 
 skill_get = Skill(name="opt", steps=[Skill("λ::a", fn=optional_lookup)])
-r = run_skill(skill_get, {})
-assert r.value == "fallback"
-print(f"15. optional lookup={r.value}")
+trace = run_skill(skill_get, {})
+assert last(trace).value == "fallback"
+print(f"15. optional lookup={last(trace).value}")
 
 # %% [markdown]
 # ## 16. check_skill — static validation of trace references
@@ -445,7 +439,7 @@ print(f"17. strip_fences: {strip_fences(fenced)!r}")
 def rich_step(_ctx: SkillContext) -> StepResult:
     return StepResult(
         value="billing_refund",
-        metadata={
+        meta={
             "confidence": 0.92,
             "reason": "matched keyword 'refund'",
             "raw_model_output": '{"intent": "billing_refund"}',
@@ -454,27 +448,27 @@ def rich_step(_ctx: SkillContext) -> StepResult:
 
 
 skill_rich = Skill(name="rich", steps=[Skill("λ::classify", fn=rich_step)])
-r = run_skill(skill_rich, {})
-assert r.metadata["confidence"] == 0.92
-print(f"18. intent={r.value}, confidence={r.metadata['confidence']}")
+trace = run_skill(skill_rich, {})
+assert last(trace).meta["confidence"] == 0.92
+print(f"18. intent={last(trace).value}, confidence={last(trace).meta['confidence']}")
 
 # %% [markdown]
 # ## 19. Empty skill
 
 # %%
-r = run_skill(Skill(name="noop"), {})
-assert r.value is None
-assert r.resolved_by == ()
-print(f"19. empty skill: resolved_by={r.resolved_by}")
+trace = run_skill(Skill(name="noop"), {})
+assert trace == {}
+assert last(trace).value is None
+print(f"19. empty skill: trace={trace}")
 
 # %% [markdown]
-# ## 20. Full trace in SkillResult
+# ## 20. Full trace access
 
 # %%
-r = run_skill(skill_nested, text="a b c d e f g h i j k l m n o p")
-assert set(r.trace) == {"λ::normalize", "λ::count_words", "λ::tag_length"}
-assert r.value == "long"
-print(f"20. trace keys: {list(r.trace)}, final={r.value}")
+trace = run_skill(skill_nested, text="a b c d e f g h i j k l m n o p")
+assert set(trace) == {"λ::normalize", "λ::count_words", "λ::tag_length"}
+assert last(trace).value == "long"
+print(f"20. trace keys: {list(trace)}, final={last(trace).value}")
 
 # %%
 print("\nAll 20 use cases passed.")
