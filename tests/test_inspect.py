@@ -14,7 +14,7 @@ from inspect_ai.scorer import Target, match
 from inspect_ai.solver import TaskState
 
 from tk.llmbda import Skill, SkillContext, StepResult
-from tk.llmbda.inspect import DEFAULT_TRACE_KEY, skill_solver, step_scorer
+from tk.llmbda.inspect import DEFAULT_TRACE_KEY, skill_solver, step_check, step_scorer
 
 
 def _make_state(input_text: str = "hello", completion: str = "") -> TaskState:
@@ -128,3 +128,71 @@ def test_step_scorer_does_not_mutate_caller_state():
     asyncio.run(scorer(state, Target("ID-1")))
 
     assert state.output.completion == original_completion
+
+
+def test_step_check_bool_predicate():
+    def _valid_step(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="ok", metadata={"valid": True})
+
+    skill = Skill(name="s", steps=[Skill(name="check", fn=_valid_step)])
+    solver = skill_solver(skill)
+    state = asyncio.run(solver(_make_state(), None))
+
+    checker = step_check("check", lambda r: r.metadata["valid"])
+    score = asyncio.run(checker(state, Target("ignored")))
+    assert score.value == 1.0
+
+
+def test_step_check_false_predicate():
+    def _invalid_step(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="bad", metadata={"valid": False, "errors": ["oops"]})
+
+    skill = Skill(name="s", steps=[Skill(name="v", fn=_invalid_step)])
+    solver = skill_solver(skill)
+    state = asyncio.run(solver(_make_state(), None))
+
+    checker = step_check("v", lambda r: r.metadata["valid"])
+    score = asyncio.run(checker(state, Target("ignored")))
+    assert score.value == 0.0
+
+
+def test_step_check_float_predicate():
+    def _partial_step(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="x", metadata={"confidence": 0.75})
+
+    skill = Skill(name="s", steps=[Skill(name="p", fn=_partial_step)])
+    solver = skill_solver(skill)
+    state = asyncio.run(solver(_make_state(), None))
+
+    checker = step_check("p", lambda r: r.metadata["confidence"])
+    score = asyncio.run(checker(state, Target("ignored")))
+    assert score.value == 0.75
+
+
+def test_step_check_score_passthrough():
+    from inspect_ai.scorer import Score  # noqa: PLC0415
+
+    def _step(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="v", metadata={"valid": True})
+
+    skill = Skill(name="s", steps=[Skill(name="s", fn=_step)])
+    solver = skill_solver(skill)
+    state = asyncio.run(solver(_make_state(), None))
+
+    checker = step_check(
+        "s", lambda _r: Score(value=1.0, answer="yes", explanation="all good")
+    )
+    score = asyncio.run(checker(state, Target("ignored")))
+    assert score.value == 1.0
+    assert score.answer == "yes"
+    assert score.explanation == "all good"
+
+
+def test_step_check_missing_step_raises():
+    solver = skill_solver(_skill())
+    state = asyncio.run(solver(_make_state(), None))
+
+    checker = step_check("nonexistent", lambda _r: True)
+    with pytest.raises(KeyError) as exc:
+        asyncio.run(checker(state, Target("x")))
+    assert "nonexistent" in str(exc.value)

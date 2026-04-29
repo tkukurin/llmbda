@@ -57,16 +57,16 @@ _TIME_RE = re.compile(
 )
 
 
-def _fmt(h: int, m: int, ampm: str | None) -> str:
-    return f"{h}:{m:02d}{ampm.lower()}" if ampm else f"{h:02d}:{m:02d}"
-
-
 def parse_time(ctx: SkillContext) -> StepResult:
     """Find a clock time like '3pm', '15:00', or a range '9-10am'."""
     m = _TIME_RE.search(ctx.entry["text"])
     if not m:
         return StepResult(None, {"reason": "no_time"})
     h1, min1, h2, min2, ampm = m.groups()
+
+    def _fmt(h, m, ap):
+        return f"{h}:{m:02d}{ap.lower()}" if ap else f"{h:02d}:{m:02d}"
+
     start = _fmt(int(h1), int(min1 or 0), ampm)
     end = _fmt(int(h2), int(min2 or 0), ampm) if h2 else None
     result = {"start": start, "end": end}
@@ -82,8 +82,7 @@ _DUR_RE = re.compile(
 
 def parse_duration(ctx: SkillContext) -> StepResult:
     """Find a duration phrase like '30 minutes' or '2 hrs' and return minutes."""
-    m = _DUR_RE.search(ctx.entry["text"])
-    if not m:
+    if not (m := _DUR_RE.search(ctx.entry["text"])):
         return StepResult(None, {"reason": "no_duration"})
     n, unit = float(m.group(1)), m.group(2).lower()
     minutes = int(n * 60) if unit.startswith(("hour", "hr")) else int(n)
@@ -96,8 +95,7 @@ _TOPIC_RE = re.compile(r"(?:about|re:)\s+(.+?)(?:[.!?]|$)", re.IGNORECASE)
 
 def parse_topic(ctx: SkillContext) -> StepResult:
     """Find a topic phrase introduced by 'about' or 're:'."""
-    m = _TOPIC_RE.search(ctx.entry["text"])
-    if not m:
+    if not (m := _TOPIC_RE.search(ctx.entry["text"])):
         return StepResult(None, {"reason": "no_topic"})
     return StepResult(m.group(1).strip(), {"reason": "matched"})
 
@@ -236,6 +234,6 @@ REQUESTS = [
 for text in REQUESTS:
     result = run_skill(book_meeting, text=text)
     print(f"\n--- {text}")
-    print(f"resolved_by: {result.resolved_by}")
+    print(f"exits:       {result.exits}")
     print(f"booking:     {result.value}")
     print(f"notes:       {result.metadata.get('notes')}")
