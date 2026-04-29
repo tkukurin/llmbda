@@ -4,7 +4,7 @@
 # Four regex parsers each extract a fragment; an LLM verifier cross-checks
 # them against the raw text, fills gaps, and flags ambiguity.
 #
-# - Intermediate steps fall through by default (`exits=()`).
+# - Intermediate steps fall through by default.
 # - The verifier is an orchestrator: it receives the parser steps as its
 #   `steps` argument, runs them via `run_skill`, then cross-checks results.
 # - `@lm(model, system_prompt=...)` binds the model at decoration time, so
@@ -21,6 +21,7 @@ from tk.llmbda import (
     Skill,
     SkillContext,
     StepResult,
+    last,
     lm,
     run_skill,
     strip_fences,
@@ -46,8 +47,8 @@ def parse_weekday(ctx: SkillContext) -> StepResult:
     text = ctx.entry["text"].lower()
     for day in WEEKDAYS:
         if re.search(rf"\b{day}\b", text):
-            return StepResult(day.capitalize(), {"reason": "matched"})
-    return StepResult(None, {"reason": "no_weekday"})
+            return StepResult(value=day.capitalize(), meta={"reason": "matched"})
+    return StepResult(meta={"reason": "no_weekday"})
 
 
 # %%
@@ -65,12 +66,12 @@ def parse_time(ctx: SkillContext) -> StepResult:
     """Find a clock time like '3pm', '15:00', or a range '9-10am'."""
     m = _TIME_RE.search(ctx.entry["text"])
     if not m:
-        return StepResult(None, {"reason": "no_time"})
+        return StepResult(meta={"reason": "no_time"})
     h1, min1, h2, min2, ampm = m.groups()
     start = _fmt(int(h1), int(min1 or 0), ampm)
     end = _fmt(int(h2), int(min2 or 0), ampm) if h2 else None
     result = {"start": start, "end": end}
-    return StepResult(result, {"range": bool(end)})
+    return StepResult(value=result, meta={"range": bool(end)})
 
 
 # %%
@@ -84,10 +85,10 @@ def parse_duration(ctx: SkillContext) -> StepResult:
     """Find a duration phrase like '30 minutes' or '2 hrs' and return minutes."""
     m = _DUR_RE.search(ctx.entry["text"])
     if not m:
-        return StepResult(None, {"reason": "no_duration"})
+        return StepResult(meta={"reason": "no_duration"})
     n, unit = float(m.group(1)), m.group(2).lower()
     minutes = int(n * 60) if unit.startswith(("hour", "hr")) else int(n)
-    return StepResult(minutes, {"reason": "matched"})
+    return StepResult(value=minutes, meta={"reason": "matched"})
 
 
 # %%
@@ -98,8 +99,8 @@ def parse_topic(ctx: SkillContext) -> StepResult:
     """Find a topic phrase introduced by 'about' or 're:'."""
     m = _TOPIC_RE.search(ctx.entry["text"])
     if not m:
-        return StepResult(None, {"reason": "no_topic"})
-    return StepResult(m.group(1).strip(), {"reason": "matched"})
+        return StepResult(meta={"reason": "no_topic"})
+    return StepResult(value=m.group(1).strip(), meta={"reason": "matched"})
 
 
 # %% [markdown]
@@ -156,14 +157,14 @@ def scripted_caller(*, messages: list[dict[str, str]], **_kw: object) -> str:
 # ## LLM verifier (orchestrator)
 #
 # Runs parser children via `run_skill`, serialises each child's *intent*
-# (`description`) plus *outcome* (`value`, `metadata`), and asks the model
+# (`description`) plus *outcome* (`value`, `meta`), and asks the model
 # to produce a final booking.
 
 # %%
 VERIFY_PROMPT = """\
 You are a calendar booking verifier.
 Input JSON has "text" (original request) and "prior_steps" (each parser's
-name/description/value/metadata). Cross-check the prior findings against
+name/description/value/meta). Cross-check the prior findings against
 the text: confirm, correct, fill gaps (no invention), flag ambiguity.
 
 Return ONLY JSON:
@@ -183,7 +184,7 @@ def _prior_payload(
             "name": s.name,
             "description": s.description,
             "value": trace[s.name].value,
-            "metadata": trace[s.name].metadata,
+            "meta": trace[s.name].meta,
         }
         for s in skills
         if s.name in trace
@@ -197,7 +198,7 @@ def verify(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
     r = run_skill(inner, ctx.entry)
     payload = {
         "text": ctx.entry["text"],
-        "prior_steps": _prior_payload(r.trace, steps),
+        "prior_steps": _prior_payload(r, steps),
     }
     try:
         msg = json.dumps(payload, indent=2)
@@ -205,11 +206,11 @@ def verify(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
         parsed = json.loads(strip_fences(raw))
         notes = parsed.get("notes", "")
         return StepResult(
-            parsed.get("booking"),
-            {"notes": notes, "llm_raw": raw},
+            value=parsed.get("booking"),
+            meta={"notes": notes, "llm_raw": raw},
         )
     except Exception as exc:  # noqa: BLE001
-        return StepResult(None, {"reason": "llm_parse_error", "error": str(exc)})
+        return StepResult(meta={"reason": "llm_parse_error", "error": str(exc)})
 
 
 # %% [markdown]
@@ -234,8 +235,8 @@ REQUESTS = [
 ]
 
 for text in REQUESTS:
-    result = run_skill(book_meeting, text=text)
+    trace = run_skill(Skill(name="s", steps=[book_meeting]), text=text)
+    result = last(trace)
     print(f"\n--- {text}")
-    print(f"resolved_by: {result.resolved_by}")
-    print(f"booking:     {result.value}")
-    print(f"notes:       {result.metadata.get('notes')}")
+    print(f"booking: {result.value}")
+    print(f"notes:   {result.meta.get('notes')}")
