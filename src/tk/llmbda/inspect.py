@@ -10,12 +10,12 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING, Any
 
-from tk.llmbda import Skill, run_skill
+from tk.llmbda import Skill, StepResult, last, run_skill
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from inspect_ai.scorer import Scorer
+    from inspect_ai.scorer import Score, Scorer
     from inspect_ai.solver import Solver, TaskState
 
 DEFAULT_TRACE_KEY = "llmbda.trace"
@@ -36,14 +36,15 @@ def skill_solver(
     @solver
     def _factory():
         async def solve(state, _generate):
-            result = run_skill(skill, extract(state))
+            trace = run_skill(skill, extract(state))
+            final = last(trace)
             state.output = ModelOutput.from_content(
                 model=str(state.model),
-                content="" if result.value is None else str(result.value),
+                content="" if final.value is None else str(final.value),
             )
             if state.metadata is None:
                 state.metadata = {}
-            state.metadata[trace_key] = result.trace
+            state.metadata[trace_key] = trace
             return state
 
         return solve
@@ -85,6 +86,37 @@ def step_scorer(
     return _factory()
 
 
+def step_check(
+    step_name: str,
+    predicate: Callable[[StepResult], float | bool | Score],
+    *,
+    trace_key: str = DEFAULT_TRACE_KEY,
+    metrics: list | None = None,
+) -> Scorer:
+    """Score a step by predicate on its StepResult (value + meta)."""
+    from inspect_ai.scorer import Score as _Score  # noqa: PLC0415
+    from inspect_ai.scorer import mean, scorer, stderr  # noqa: PLC0415
+
+    resolved_metrics = metrics or [mean(), stderr()]
+
+    @scorer(metrics=resolved_metrics, name=f"check[{step_name}]")
+    def _factory():
+        async def score(state, target):  # noqa: ARG001
+            trace = (state.metadata or {}).get(trace_key) or {}
+            if step_name not in trace:
+                available = ", ".join(trace) or "(none)"
+                raise KeyError(f"{step_name!r} not in trace (available: {available})")
+            out = predicate(trace[step_name])
+            if isinstance(out, _Score):
+                return out
+            val = float(out) if isinstance(out, (int, float)) else (1.0 if out else 0.0)
+            return _Score(value=val)
+
+        return score
+
+    return _factory()
+
+
 def _inherit_metrics(inner: Scorer) -> list | None:
     """Best-effort read of metrics baked into *inner* at definition time."""
     try:
@@ -97,4 +129,4 @@ def _inherit_metrics(inner: Scorer) -> list | None:
         return None
 
 
-__all__ = ["DEFAULT_TRACE_KEY", "skill_solver", "step_scorer"]
+__all__ = ["DEFAULT_TRACE_KEY", "skill_solver", "step_check", "step_scorer"]
