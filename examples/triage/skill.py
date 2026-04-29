@@ -131,7 +131,8 @@ def detect_urgency(ctx: SkillContext) -> StepResult:
         severity = "sev2"
     else:
         severity = "sev3"
-    return StepResult(value={"features": features, "score": score, "severity": severity})
+    result = {"features": features, "score": score, "severity": severity}
+    return StepResult(value=result)
 
 
 def _lm_json_call(call: LMCaller, payload: dict[str, Any]) -> tuple[Any, str]:

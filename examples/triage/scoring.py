@@ -27,7 +27,6 @@ from inspect_ai.scorer import (
 )
 from inspect_ai.solver import TaskState
 from skill import CLASSIFY, DRAFT, IDENTIFIERS, SUMMARIZE, TICKETS, support_triage
-from tk.llmbda import last
 
 from tk.llmbda.inspect import skill_solver, step_scorer
 

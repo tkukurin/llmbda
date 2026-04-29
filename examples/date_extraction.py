@@ -31,7 +31,7 @@ def llm_caller(*, messages, **kwargs):
     return resp.choices[0].message.content
 
 
-@lm(llm_caller, system_prompt="Extract a date from the text. Return ONLY an ISO-8601 date.")
+@lm(llm_caller, system_prompt="Extract a date. Return ONLY an ISO-8601 date.")
 def extract_date_lm(ctx: SkillContext, call) -> StepResult:
     """Extract a date via LLM."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
@@ -54,7 +54,8 @@ def refine_date(ctx: SkillContext, call) -> StepResult:
             return StepResult(value=value, meta={"valid": True})
         prompt = f"Text: {ctx.entry['text']}\nPrevious attempt: {value}"
         value = call(messages=[{"role": "user", "content": prompt}]).strip()
-    return StepResult(value=value, meta={"valid": bool(value and _ISO_RE.fullmatch(str(value)))})
+    valid = bool(value and _ISO_RE.fullmatch(str(value)))
+    return StepResult(value=value, meta={"valid": valid})
 
 
 skill = Skill(

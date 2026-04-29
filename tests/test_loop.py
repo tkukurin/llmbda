@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from tk.llmbda import Skill, SkillContext, StepResult, fst_match, iter_skill, last, run_skill
+from tk.llmbda import (
+    Skill,
+    SkillContext,
+    StepResult,
+    fst_match,
+    iter_skill,
+    last,
+    run_skill,
+)
 
 
 def test_fst_match_returns_first_non_none():

@@ -147,11 +147,16 @@ skill_hybrid = Skill(
     ],
 )
 
-trace_regex = run_skill(Skill(name="s", steps=[skill_hybrid]), text="deadline is 2025-01-15")
+trace_regex = run_skill(
+    Skill(name="s", steps=[skill_hybrid]), text="deadline is 2025-01-15"
+)
 assert last(trace_regex).value == "2025-01-15"
 assert last(trace_regex).meta["source"] == "regex"
 
-trace_llm = run_skill(Skill(name="s", steps=[skill_hybrid]), text="the fifteenth of January 2025")
+trace_llm = run_skill(
+    Skill(name="s", steps=[skill_hybrid]),
+    text="the fifteenth of January 2025",
+)
 assert last(trace_llm).value == "2025-01-15"
 print(f"5. regex={last(trace_regex).value}, llm={last(trace_llm).value}")
 
@@ -318,7 +323,8 @@ skill_multi_model = Skill(
 trace = run_skill(skill_multi_model, text="book Tuesday 3pm")
 assert last(trace).value["confirmed"] is True
 assert trace["ψ::classify"].value["intent"] == "booking"
-print(f"10. intent={trace['ψ::classify'].value['intent']}, slot={last(trace).value['slot']}")
+intent = trace["ψ::classify"].value["intent"]
+print(f"10. intent={intent}, slot={last(trace).value['slot']}")
 
 # %% [markdown]
 # ## 11. Test re-binding: swap model for testing via __wrapped__
