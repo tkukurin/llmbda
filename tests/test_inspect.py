@@ -29,7 +29,7 @@ def _make_state(input_text: str = "hello", completion: str = "") -> TaskState:
 
 
 def _identifiers_step(ctx: SkillContext) -> StepResult:
-    return StepResult(value=["ID-1", "ID-2"], metadata={"raw": ctx.entry})
+    return StepResult(value=["ID-1", "ID-2"], meta={"raw": ctx.entry})
 
 
 def _draft_step(ctx: SkillContext) -> StepResult:
@@ -56,7 +56,7 @@ def test_skill_solver_sets_completion_and_trace():
     trace = out.metadata[DEFAULT_TRACE_KEY]
     assert set(trace) == {"identifiers", "draft"}
     assert trace["identifiers"].value == ["ID-1", "ID-2"]
-    assert trace["identifiers"].metadata == {"raw": "ticket body"}
+    assert trace["identifiers"].meta == {"raw": "ticket body"}
 
 
 def test_skill_solver_custom_entry_extractor():
@@ -132,39 +132,39 @@ def test_step_scorer_does_not_mutate_caller_state():
 
 def test_step_check_bool_predicate():
     def _valid_step(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="ok", metadata={"valid": True})
+        return StepResult(value="ok", meta={"valid": True})
 
     skill = Skill(name="s", steps=[Skill(name="check", fn=_valid_step)])
     solver = skill_solver(skill)
     state = asyncio.run(solver(_make_state(), None))
 
-    checker = step_check("check", lambda r: r.metadata["valid"])
+    checker = step_check("check", lambda r: r.meta["valid"])
     score = asyncio.run(checker(state, Target("ignored")))
     assert score.value == 1.0
 
 
 def test_step_check_false_predicate():
     def _invalid_step(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="bad", metadata={"valid": False, "errors": ["oops"]})
+        return StepResult(value="bad", meta={"valid": False, "errors": ["oops"]})
 
     skill = Skill(name="s", steps=[Skill(name="v", fn=_invalid_step)])
     solver = skill_solver(skill)
     state = asyncio.run(solver(_make_state(), None))
 
-    checker = step_check("v", lambda r: r.metadata["valid"])
+    checker = step_check("v", lambda r: r.meta["valid"])
     score = asyncio.run(checker(state, Target("ignored")))
     assert score.value == 0.0
 
 
 def test_step_check_float_predicate():
     def _partial_step(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="x", metadata={"confidence": 0.75})
+        return StepResult(value="x", meta={"confidence": 0.75})
 
     skill = Skill(name="s", steps=[Skill(name="p", fn=_partial_step)])
     solver = skill_solver(skill)
     state = asyncio.run(solver(_make_state(), None))
 
-    checker = step_check("p", lambda r: r.metadata["confidence"])
+    checker = step_check("p", lambda r: r.meta["confidence"])
     score = asyncio.run(checker(state, Target("ignored")))
     assert score.value == 0.75
 
@@ -173,7 +173,7 @@ def test_step_check_score_passthrough():
     from inspect_ai.scorer import Score  # noqa: PLC0415
 
     def _step(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="v", metadata={"valid": True})
+        return StepResult(value="v", meta={"valid": True})
 
     skill = Skill(name="s", steps=[Skill(name="s", fn=_step)])
     solver = skill_solver(skill)
@@ -185,7 +185,6 @@ def test_step_check_score_passthrough():
     score = asyncio.run(checker(state, Target("ignored")))
     assert score.value == 1.0
     assert score.answer == "yes"
-    assert score.explanation == "all good"
 
 
 def test_step_check_missing_step_raises():

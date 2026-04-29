@@ -27,18 +27,13 @@ class LMCaller(Protocol):
 
 @dataclass
 class StepResult:
-    """Skill output. Truthy `exits` short-circuits the remaining sequence."""
+    """Step output: a value and optional auxiliary metadata."""
 
-    value: Any
-    metadata: dict[str, Any] = field(default_factory=dict)
-    exits: tuple[str, ...] | bool = ()
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.exits, tuple):
-            self.exits = ("self",) if self.exits else ()
+    value: Any = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
-ROOT = StepResult(value=None)  # sentinel
+Trace = dict[str, StepResult]
 
 
 class _Trace(dict):
@@ -54,8 +49,8 @@ class SkillContext:
     """Runtime state threaded through the skill sequence."""
 
     entry: Any
-    trace: dict[str, StepResult] = field(default_factory=_Trace)
-    prev: StepResult = field(default_factory=lambda: ROOT)
+    trace: Trace = field(default_factory=_Trace)
+    prev: StepResult = field(default_factory=StepResult)
 
 
 SkillFn = Callable[[SkillContext], StepResult]
@@ -86,17 +81,6 @@ class Skill:
         ]
         if not self.description and self.fn:
             self.description = _stdlib_inspect.getdoc(self.fn) or ""
-
-
-@dataclass
-class SkillResult:
-    """Skill output with per-step trace."""
-
-    skill: str
-    resolved_by: tuple[str, ...]
-    value: Any
-    metadata: dict[str, Any] = field(default_factory=dict)
-    trace: dict[str, StepResult] = field(default_factory=dict)
 
 
 def lm(
@@ -153,20 +137,17 @@ def _dup_trace_names(skill: Skill) -> list[str]:
     return [*_dups(_trace_names(skill)), *cs, *_child_scope_dups(skill)]
 
 
-def _walk(skill: Skill, ctx: SkillContext):
-    """DFS walk yielding (name, result). Stops on truthy exits."""
+def _walk(skill: Skill, ctx: SkillContext) -> Iterator[tuple[str, StepResult]]:
+    """DFS walk yielding (name, result)."""
     if skill.fn:
         result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
         if not isinstance(result, StepResult):
             result = StepResult(value=result)
         ctx.trace[skill.name] = ctx.prev = result
-        exited = bool(result.exits)
         yield skill.name, result
-        return exited
-    for child in skill.steps:
-        if (yield from _walk(child, ctx)):
-            return True
-    return False
+    else:
+        for child in skill.steps:
+            yield from _walk(child, ctx)
 
 
 def _make_entry(entry: Any, kwargs: dict[str, Any]) -> Any:
@@ -181,26 +162,33 @@ def iter_skill(
     entry: Any = None,
     **kwargs: Any,
 ) -> Iterator[tuple[str, StepResult]]:
-    """Yield (name, result) per executed skill. Stops on truthy exits or after last."""
+    """Yield (name, result) per executed step."""
     if duplicates := _dup_trace_names(skill):
         raise ValueError(duplicates)
     ctx = SkillContext(entry=_make_entry(entry, kwargs))
     yield from _walk(skill, ctx)
 
 
-def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> SkillResult:
-    """Run *skill* to completion."""
-    if not (trace := dict(iter_skill(skill, _make_entry(entry, kwargs)))):
-        return SkillResult(skill=skill.name, resolved_by=(), value=None)
-    last_name, last = next(reversed(trace.items()))
-    trail = last.exits[:-1] if last.exits[-1:] == ("self",) else last.exits
-    return SkillResult(
-        skill=skill.name,
-        resolved_by=(last_name, *trail),
-        value=last.value,
-        metadata=last.metadata,
-        trace=trace,
-    )
+def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> Trace:
+    """Run *skill* to completion, return ordered trace dict."""
+    return dict(iter_skill(skill, _make_entry(entry, kwargs)))
+
+
+def last(trace: Trace) -> StepResult:
+    """Last step's result from a trace."""
+    if not trace:
+        return StepResult()
+    return trace[next(reversed(trace))]
+
+
+def fst_match(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+    """Orchestrator: return the first child result with a non-None value."""
+    for s in steps:
+        r = run_skill(Skill(name="_", steps=[s]), ctx.entry)
+        v = last(r)
+        if v.value is not None:
+            return v
+    return StepResult()
 
 
 _FENCE = "```"
@@ -221,18 +209,19 @@ def strip_fences(text: str) -> str:
 
 
 __all__ = [
-    "ROOT",
     "LMCaller",
     "LMSkillFn",
     "OrchestratorFn",
     "Skill",
     "SkillContext",
     "SkillFn",
-    "SkillResult",
     "StepResult",
+    "Trace",
     "__version__",
     "check_skill",
+    "fst_match",
     "iter_skill",
+    "last",
     "lm",
     "run_skill",
     "strip_fences",

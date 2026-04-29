@@ -50,7 +50,7 @@ EVAL_SAMPLES = [
 
 # %%
 def _trace(state: TaskState) -> dict:
-    return (state.metadata or {}).get("llmbda.trace", {})
+    return (state.metadata or {}).get("llmbda.trace", {})  # Trace dict
 
 
 classify_matches_intent = step_scorer(
@@ -97,6 +97,7 @@ key details from the request.
 {instructions}
 """
 
+draft_reply_quality = None
 if grader := os.environ.get(gradevar := "INSPECT_GRADER"):
     g = model_graded_qa(template=REPLY_QUALITY_TEMPLATE, model=grader)
     draft_reply_quality = step_scorer(DRAFT, g, project=lambda v: v["customer_reply"])

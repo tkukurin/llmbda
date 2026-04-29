@@ -9,23 +9,25 @@ import json
 
 from skill import TICKETS, run_skill, support_triage
 
+from tk.llmbda import last
+
 # %% [markdown]
 # ## Run the skill on every ticket
 
 # %%
 for ticket in TICKETS:
-    result = run_skill(support_triage, ticket)
+    trace = run_skill(support_triage, ticket)
+    result = last(trace)
     print(f"\n{ticket['id']} · {ticket['subject']}")
-    print(f"resolved_by: {result.resolved_by}")
     print(json.dumps(result.value, indent=2))
-    print(f"validation:  {result.metadata}")
+    print(f"meta: {result.meta}")
 
 # %% [markdown]
 # ## Inspect one trace
 
 # %%
-result = run_skill(support_triage, TICKETS[1])
-for name, step_result in result.trace.items():
+trace = run_skill(support_triage, TICKETS[1])
+for name, step_result in trace.items():
     print(f"\n{name}")
-    print(f"value:    {json.dumps(step_result.value, indent=2)}")
-    print(f"metadata: {json.dumps(step_result.metadata, indent=2)}")
+    print(f"value: {json.dumps(step_result.value, indent=2)}")
+    print(f"meta:  {json.dumps(step_result.meta, indent=2)}")

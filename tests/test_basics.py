@@ -7,12 +7,11 @@ from typing import Any
 import pytest
 
 from tk.llmbda import (
-    ROOT,
     Skill,
     SkillContext,
-    SkillResult,
     StepResult,
     iter_skill,
+    last,
     lm,
     run_skill,
 )
@@ -24,11 +23,8 @@ def echo_step(ctx: SkillContext) -> StepResult:
 
 
 def counting_step(ctx: SkillContext) -> StepResult:
-    """Step that counts prior steps and falls through."""
-    return StepResult(
-        value=len(ctx.trace),
-        metadata={"seen": list(ctx.trace.keys())},
-    )
+    """Step that counts prior steps."""
+    return StepResult(value=len(ctx.trace), meta={"seen": list(ctx.trace.keys())})
 
 
 def _documented_step(_ctx: SkillContext) -> StepResult:
@@ -42,34 +38,14 @@ def _bare_step(_ctx: SkillContext) -> StepResult:
 
 def test_single_step():
     skill = Skill(name="echo", steps=[Skill("echo", fn=echo_step)])
-    result = run_skill(skill, {"x": 1})
-    assert isinstance(result, SkillResult)
-    assert result.value == {"x": 1}
-    assert result.skill == "echo"
-    assert result.resolved_by == ("echo",)
-    assert "echo" in result.trace
-    assert result.trace["echo"].value == {"x": 1}
+    trace = run_skill(skill, {"x": 1})
+    assert isinstance(trace, dict)
+    assert last(trace).value == {"x": 1}
+    assert "echo" in trace
+    assert trace["echo"].value == {"x": 1}
 
 
-def test_resolved_short_circuits():
-    def _resolver(_ctx):
-        return StepResult(value="stopped", exits=True)
-
-    def _unreachable(_ctx):
-        msg = "should not be called"
-        raise AssertionError(msg)
-
-    skill = Skill(
-        name="short",
-        steps=[Skill("resolver", fn=_resolver), Skill("unreachable", fn=_unreachable)],
-    )
-    result = run_skill(skill, {})
-    assert result.value == "stopped"
-    assert result.resolved_by == ("resolver",)
-    assert "resolver" in result.trace
-
-
-def test_implicit_resolved_on_last_step():
+def test_all_steps_run_in_sequence():
     skill = Skill(
         name="chain",
         steps=[
@@ -78,28 +54,26 @@ def test_implicit_resolved_on_last_step():
             Skill("c", fn=counting_step),
         ],
     )
-    result = run_skill(skill, {})
-    assert result.value == 2  # step c sees a and b
-    assert result.resolved_by == ("c",)
-    assert list(result.trace) == ["a", "b", "c"]
+    trace = run_skill(skill, {})
+    assert last(trace).value == 2
+    assert list(trace) == ["a", "b", "c"]
 
 
 def test_prior_accumulates():
     def deposit(_ctx):
-        return StepResult(value="first", metadata={"order": 1})
+        return StepResult(value="first", meta={"order": 1})
 
     def check(ctx):
-        prior_val = ctx.trace["deposit"].value
-        return StepResult(value=f"saw {prior_val}")
+        return StepResult(value=f"saw {ctx.trace['deposit'].value}")
 
     skill = Skill(
         name="acc",
         steps=[Skill("deposit", fn=deposit), Skill("check", fn=check)],
     )
-    result = run_skill(skill, {})
-    assert result.value == "saw first"
-    assert result.trace["deposit"].value == "first"
-    assert result.trace["deposit"].metadata == {"order": 1}
+    trace = run_skill(skill, {})
+    assert last(trace).value == "saw first"
+    assert trace["deposit"].value == "first"
+    assert trace["deposit"].meta == {"order": 1}
 
 
 @pytest.mark.parametrize(
@@ -150,44 +124,36 @@ def test_same_name_allowed_across_outer_and_orchestrator_child_scopes():
             Skill("orch", fn=_orch_step, steps=[Skill("same", fn=_step)]),
         ],
     )
-    result = run_skill(skill, {})
-    assert result.resolved_by == ("orch",)
-    assert list(result.trace) == ["same", "orch"]
+    trace = run_skill(skill, {})
+    assert list(trace) == ["same", "orch"]
 
 
 def test_empty_skill():
     skill = Skill(name="noop")
-    result = run_skill(skill, {"x": 1})
-    assert result.value is None
-    assert result.skill == "noop"
-    assert result.resolved_by == ()
-    assert result.trace == {}
+    trace = run_skill(skill, {"x": 1})
+    assert trace == {}
+    assert last(trace).value is None
 
 
-def test_step_metadata_preserved_unchanged():
+def test_step_meta_preserved():
     def _with_meta(_ctx):
-        return StepResult(value=42, metadata={"custom": "data", "extra": True})
+        return StepResult(value=42, meta={"custom": "data", "extra": True})
 
     skill = Skill(name="meta", steps=[Skill("with_meta", fn=_with_meta)])
-    result = run_skill(skill, {})
-    assert result.metadata == {"custom": "data", "extra": True}
-    assert result.skill == "meta"
-    assert result.resolved_by == ("with_meta",)
+    trace = run_skill(skill, {})
+    assert last(trace).meta == {"custom": "data", "extra": True}
 
 
-def test_step_metadata_not_mutated_by_runtime():
-    """Runtime attrs live on SkillResult; step's metadata dict is untouched."""
-    emitted = StepResult(value=1, metadata={"skill": "hijacked"})
+def test_step_meta_not_mutated_by_runtime():
+    emitted = StepResult(value=1, meta={"key": "original"})
 
-    def _clashing(_ctx):
+    def _emit(_ctx):
         return emitted
 
-    skill = Skill(name="real", steps=[Skill("clash", fn=_clashing)])
-    result = run_skill(skill, {})
-    assert result.skill == "real"
-    assert result.resolved_by == ("clash",)
-    assert emitted.metadata == {"skill": "hijacked"}  # unchanged
-    assert result.metadata == {"skill": "hijacked"}
+    skill = Skill(name="s", steps=[Skill("a", fn=_emit)])
+    trace = run_skill(skill, {})
+    assert trace["a"] is emitted
+    assert emitted.meta == {"key": "original"}
 
 
 def test_iter_yields_each_step_in_order():
@@ -202,47 +168,6 @@ def test_iter_yields_each_step_in_order():
     yielded = list(iter_skill(skill, {}))
     assert [name for name, _ in yielded] == ["a", "b", "c"]
     assert [r.value for _, r in yielded] == [0, 1, 2]
-
-
-def test_iter_stops_after_resolved():
-    def _stop(_ctx):
-        return StepResult(value="done", exits=True)
-
-    def _never(_ctx):
-        msg = "should not run"
-        raise AssertionError(msg)
-
-    skill = Skill(
-        name="s",
-        steps=[Skill("stop", fn=_stop), Skill("never", fn=_never)],
-    )
-    yielded = list(iter_skill(skill, {}))
-    assert [name for name, _ in yielded] == ["stop"]
-
-
-def test_iter_stop_decision_survives_result_mutation():
-    called: list[str] = []
-
-    def _stop(_ctx):
-        return StepResult(value="done", exits=True)
-
-    def _never(_ctx):
-        called.append("never")
-        return StepResult(value="unreachable")
-
-    skill = Skill(
-        name="s",
-        steps=[Skill("stop", fn=_stop), Skill("never", fn=_never)],
-    )
-    it = iter_skill(skill, {})
-    name, result = next(it)
-    assert name == "stop"
-
-    result.exits = ()
-
-    with pytest.raises(StopIteration):
-        next(it)
-    assert called == []
 
 
 def test_iter_break_early():
@@ -396,8 +321,8 @@ def test_lm_step_receives_bound_caller():
         return StepResult(value=raw)
 
     skill = Skill(name="chat", steps=[Skill("llm", fn=llm_step)])
-    result = run_skill(skill, {})
-    assert result.value == "hello back"
+    trace = run_skill(skill, {})
+    assert last(trace).value == "hello back"
 
 
 def test_lm_introspection_attrs():
@@ -429,14 +354,13 @@ def test_lm_rewrap_for_testing():
 
     rewrapped = lm(spy_model, system_prompt="test prompt")(llm_step.__wrapped__)  # type: ignore[attr-defined]
     skill = Skill(name="s", steps=[Skill("llm", fn=rewrapped)])
-    result = run_skill(skill, {})
-    assert result.value == "spy"
+    trace = run_skill(skill, {})
+    assert last(trace).value == "spy"
     assert len(captured) == 1
     assert captured[0][0] == {"role": "system", "content": "test prompt"}
 
 
 def test_lm_rebinds_between_steps():
-    """Each step sees a caller bound to its own model and prompt."""
     captured: list[list[dict[str, str]]] = []
 
     def capturing(*, messages: list[dict[str, str]], **_kw: Any) -> str:
@@ -453,10 +377,7 @@ def test_lm_rebinds_between_steps():
         call(messages=[{"role": "user", "content": "b"}])
         return StepResult(value="done")
 
-    skill = Skill(
-        name="s",
-        steps=[Skill("a", fn=fn_a), Skill("b", fn=fn_b)],
-    )
+    skill = Skill(name="s", steps=[Skill("a", fn=fn_a), Skill("b", fn=fn_b)])
     run_skill(skill, {})
     assert captured == [
         [{"role": "system", "content": "prompt-a"}, {"role": "user", "content": "a"}],
@@ -464,22 +385,16 @@ def test_lm_rebinds_between_steps():
     ]
 
 
-def test_exits_defaults_to_empty():
-    r = StepResult(value=42)
-    assert r.exits == ()
-
-
-def test_prev_is_root_initially():
-    def check_root(ctx: SkillContext) -> StepResult:
-        assert ctx.prev is ROOT
+def test_prev_starts_as_empty_step_result():
+    def check(ctx: SkillContext) -> StepResult:
+        assert ctx.prev.value is None
         return StepResult(value="ok")
 
-    skill = Skill(name="s", steps=[Skill("a", fn=check_root)])
+    skill = Skill(name="s", steps=[Skill("a", fn=check)])
     run_skill(skill, {})
 
 
 def test_prev_tracks_previous_step():
-    """ctx.prev holds the most recently executed step's result."""
     seen_prev: list[Any] = []
 
     def record_prev(ctx: SkillContext) -> StepResult:
@@ -511,8 +426,6 @@ def test_prior_keyerror_includes_available_steps():
 
 
 def test_prior_get_returns_none_for_missing():
-    """dict.get bypasses __missing__ and returns the default."""
-
     def check_get(ctx: SkillContext) -> StepResult:
         assert ctx.trace.get("missing") is None
         return StepResult(value="ok")
@@ -531,9 +444,9 @@ def test_prior_get_returns_none_for_missing():
 )
 def test_raw_return_wrapped(fn, expected):
     skill = Skill(name="s", steps=[Skill("a", fn=fn)])
-    result = run_skill(skill, {})
-    assert result.value == expected
-    assert isinstance(result.trace["a"], StepResult)
+    trace = run_skill(skill, {})
+    assert last(trace).value == expected
+    assert isinstance(trace["a"], StepResult)
 
 
 def test_raw_return_in_chain_updates_prev():
@@ -548,24 +461,12 @@ def test_raw_return_in_chain_updates_prev():
     assert seen == [42]
 
 
-def test_explicit_step_result_still_works():
-    """Ensure explicit StepResult isn't double-wrapped."""
-
-    def resolve(_):
-        return StepResult(value="x", exits=True)
-
-    skill = Skill(name="s", steps=[Skill("a", fn=resolve)])
-    result = run_skill(skill, {})
-    assert result.value == "x"
-    assert result.resolved_by == ("a",)
-
-
 def test_run_skill_kwargs_entry():
     def read_name(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.entry["name"])
 
     skill = Skill(name="s", steps=[Skill("a", fn=read_name)])
-    assert run_skill(skill, name="alice").value == "alice"
+    assert last(run_skill(skill, name="alice")).value == "alice"
 
 
 def test_iter_skill_kwargs_entry():
@@ -585,7 +486,7 @@ def test_kwargs_and_positional_entry_raises():
 
 def test_positional_entry_still_works():
     skill = Skill(name="s", steps=[Skill("a", fn=echo_step)])
-    assert run_skill(skill, {"x": 1}).value == {"x": 1}
+    assert last(run_skill(skill, {"x": 1})).value == {"x": 1}
 
 
 @pytest.mark.parametrize(
@@ -600,7 +501,7 @@ def test_bare_callable_wrapping(fn, expected_name, expected_value):
     skill = Skill(name="s", steps=[fn])
     assert isinstance(skill.steps[0], Skill)
     assert skill.steps[0].name == expected_name
-    assert run_skill(skill, {}).value == expected_value
+    assert last(run_skill(skill, {})).value == expected_value
 
 
 def test_mixed_skill_and_callable_steps():
@@ -611,9 +512,9 @@ def test_mixed_skill_and_callable_steps():
         return StepResult(value="a")
 
     skill = Skill(name="s", steps=[Skill("a", fn=step_a), step_b])
-    result = run_skill(skill, {})
-    assert list(result.trace) == ["a", "step_b"]
-    assert result.value == "b"
+    trace = run_skill(skill, {})
+    assert list(trace) == ["a", "step_b"]
+    assert last(trace).value == "b"
 
 
 def test_bare_callable_gets_description_from_docstring():
@@ -623,3 +524,7 @@ def test_bare_callable_gets_description_from_docstring():
 
     skill = Skill(name="s", steps=[documented])
     assert skill.steps[0].description == "I have docs."
+
+
+def test_last_of_empty_trace():
+    assert last({}).value is None

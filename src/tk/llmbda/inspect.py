@@ -10,15 +10,13 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING, Any
 
-from tk.llmbda import Skill, run_skill
+from tk.llmbda import Skill, StepResult, last, run_skill
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from inspect_ai.scorer import Score, Scorer
     from inspect_ai.solver import Solver, TaskState
-
-    from tk.llmbda import StepResult
 
 DEFAULT_TRACE_KEY = "llmbda.trace"
 
@@ -38,14 +36,15 @@ def skill_solver(
     @solver
     def _factory():
         async def solve(state, _generate):
-            result = run_skill(skill, extract(state))
+            trace = run_skill(skill, extract(state))
+            final = last(trace)
             state.output = ModelOutput.from_content(
                 model=str(state.model),
-                content="" if result.value is None else str(result.value),
+                content="" if final.value is None else str(final.value),
             )
             if state.metadata is None:
                 state.metadata = {}
-            state.metadata[trace_key] = result.trace
+            state.metadata[trace_key] = trace
             return state
 
         return solve
@@ -87,18 +86,6 @@ def step_scorer(
     return _factory()
 
 
-def _inherit_metrics(inner: Scorer) -> list | None:
-    """Best-effort read of metrics baked into *inner* at definition time."""
-    try:
-        from inspect_ai.scorer._scorer import scorer_metrics  # noqa: PLC0415
-    except ImportError:
-        return None
-    try:
-        return list(scorer_metrics(inner)) or None
-    except (AttributeError, KeyError, TypeError):
-        return None
-
-
 def step_check(
     step_name: str,
     predicate: Callable[[StepResult], float | bool | Score],
@@ -106,7 +93,7 @@ def step_check(
     trace_key: str = DEFAULT_TRACE_KEY,
     metrics: list | None = None,
 ) -> Scorer:
-    """Score a step by predicate on its StepResult (value + metadata)."""
+    """Score a step by predicate on its StepResult (value + meta)."""
     from inspect_ai.scorer import Score as _Score  # noqa: PLC0415
     from inspect_ai.scorer import mean, scorer, stderr  # noqa: PLC0415
 
@@ -128,6 +115,18 @@ def step_check(
         return score
 
     return _factory()
+
+
+def _inherit_metrics(inner: Scorer) -> list | None:
+    """Best-effort read of metrics baked into *inner* at definition time."""
+    try:
+        from inspect_ai.scorer._scorer import scorer_metrics  # noqa: PLC0415
+    except ImportError:
+        return None
+    try:
+        return list(scorer_metrics(inner)) or None
+    except (AttributeError, KeyError, TypeError):
+        return None
 
 
 __all__ = ["DEFAULT_TRACE_KEY", "skill_solver", "step_check", "step_scorer"]
