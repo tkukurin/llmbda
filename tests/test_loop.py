@@ -1,101 +1,47 @@
-"""Tests for loop-as-leaf and orchestrator behavior."""
+"""Tests for orchestrator behavior."""
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
-from tk.llmbda import Skill, SkillContext, StepResult, iter_skill, run_skill
+from tk.llmbda import Skill, SkillContext, StepResult, fst_match, iter_skill, last, run_skill
 
 
-def test_loop_leaf_result_visible_in_trace():
-    def loop_fn(_ctx: SkillContext) -> StepResult:
-        value = None
-        for i in range(3):
-            value = i
-        return StepResult(value=value)
-
-    def after(ctx: SkillContext) -> StepResult:
-        return StepResult(value=f"after:{ctx.trace['loop'].value}")
-
+def test_fst_match_returns_first_non_none():
     skill = Skill(
         name="s",
         steps=[
-            Skill("loop", fn=loop_fn),
-            Skill("after", fn=after),
+            Skill(
+                "pick",
+                fn=fst_match,
+                steps=[
+                    Skill("a", fn=lambda _: StepResult()),
+                    Skill("b", fn=lambda _: StepResult(value="found")),
+                    Skill("c", fn=lambda _: StepResult(value="late")),
+                ],
+            )
         ],
     )
-    result = run_skill(skill, {})
-    assert result.value == "after:2"
-    assert result.trace["loop"].value == 2
+    trace = run_skill(skill, {})
+    assert last(trace).value == "found"
 
 
-def test_loop_leaf_can_absorb_internal_resolution():
-    def loop_fn(_ctx: SkillContext) -> StepResult:
-        for i in range(3):
-            if i == 1:
-                return StepResult(value="done")
-        return StepResult(value="miss")
-
-    def after(ctx: SkillContext) -> StepResult:
-        return StepResult(value=f"after:{ctx.trace['loop'].value}")
-
+def test_fst_match_returns_empty_when_all_none():
     skill = Skill(
         name="s",
         steps=[
-            Skill("loop", fn=loop_fn),
-            Skill("after", fn=after),
+            Skill(
+                "pick",
+                fn=fst_match,
+                steps=[
+                    Skill("a", fn=lambda _: StepResult()),
+                    Skill("b", fn=lambda _: StepResult()),
+                ],
+            )
         ],
     )
-    result = run_skill(skill, {})
-    assert result.value == "after:done"
-    assert result.resolved_by == ("after",)
-
-
-def test_loop_leaf_resolved_short_circuits_sequence():
-    def loop_fn(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="done", exits=True)
-
-    def unreachable(_ctx: SkillContext) -> StepResult:
-        msg = "should not run"
-        raise AssertionError(msg)
-
-    skill = Skill(
-        name="s",
-        steps=[
-            Skill("loop", fn=loop_fn),
-            Skill("after", fn=unreachable),
-        ],
-    )
-    result = run_skill(skill, {})
-    assert result.value == "done"
-    assert result.resolved_by == ("loop",)
-
-
-def test_loop_leaf_gets_ctx_entry_and_prev():
-    seen_prev: list[Any] = []
-
-    def setup(_ctx: SkillContext) -> StepResult:
-        return StepResult(value=10)
-
-    def loop_fn(ctx: SkillContext) -> StepResult:
-        seen_prev.append(ctx.prev.value)
-        total = ctx.prev.value
-        for item in ctx.entry["items"]:
-            total += item
-        return StepResult(value=total)
-
-    skill = Skill(
-        name="s",
-        steps=[
-            Skill("setup", fn=setup),
-            Skill("loop", fn=loop_fn),
-        ],
-    )
-    result = run_skill(skill, {"items": [1, 2, 3]})
-    assert result.value == 16
-    assert seen_prev == [10]
+    trace = run_skill(skill, {})
+    assert last(trace).value is None
 
 
 def test_orchestrator_fn_receives_children_as_steps_arg():
@@ -113,30 +59,105 @@ def test_orchestrator_fn_receives_children_as_steps_arg():
     assert seen_steps == [[child_a, child_b]]
 
 
-def test_orchestrator_steps_arg_does_not_leak_to_later_leaf():
-    """A leaf after an orchestrator has no access to the orchestrator's children."""
-    after_called = []
+def test_orchestrator_can_run_children_via_run_skill():
+    def orchestrator(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+        inner = Skill(name="inner", steps=steps)
+        r = run_skill(inner, ctx.entry)
+        return StepResult(value=last(r).value, meta={"ran": list(r)})
 
-    child = Skill("inner", fn=lambda _: StepResult(value=1))
+    skill = Skill(
+        name="orch",
+        fn=orchestrator,
+        steps=[
+            Skill("a", fn=lambda _: StepResult(value=1)),
+            Skill("b", fn=lambda ctx: StepResult(value=ctx.prev.value + 1)),
+        ],
+    )
+    trace = run_skill(Skill(name="s", steps=[skill]), {})
+    assert last(trace).value == 2
+    assert trace["orch"].meta["ran"] == ["a", "b"]
 
-    def orchestrator(_ctx: SkillContext, steps: list[Skill]) -> StepResult:
-        assert steps == [child]
-        return StepResult(value="ok")
 
-    def after(ctx: SkillContext) -> StepResult:
-        after_called.append(True)
-        assert not hasattr(ctx, "skills")
-        return StepResult(value="done")
+def test_orchestrator_early_exit_pattern():
+    """Orchestrator stops on first non-None child result."""
+
+    def first_match(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+        for s in steps:
+            r = run_skill(Skill(name="_try", steps=[s]), ctx.entry)
+            v = last(r)
+            if v.value is not None:
+                return v
+        return StepResult()
+
+    def try_cache(ctx: SkillContext) -> StepResult:
+        cache = {"known": "cached-value"}
+        return StepResult(value=cache.get(ctx.entry.get("key")))
+
+    def compute(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="computed")
 
     skill = Skill(
         name="s",
         steps=[
-            Skill("orch", fn=orchestrator, steps=[child]),
-            Skill("after", fn=after),
+            Skill(
+                "lookup",
+                fn=first_match,
+                steps=[Skill("cache", fn=try_cache), Skill("compute", fn=compute)],
+            ),
         ],
     )
-    run_skill(skill, {})
-    assert after_called == [True]
+    hit = run_skill(skill, {"key": "known"})
+    assert last(hit).value == "cached-value"
+
+    miss = run_skill(skill, {"key": "other"})
+    assert last(miss).value == "computed"
+
+
+def test_orchestrator_shares_outer_trace():
+    def setup(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="setup_value")
+
+    def orchestrator(ctx: SkillContext, _steps: list[Skill]) -> StepResult:
+        return StepResult(value=f"saw:{ctx.trace['setup'].value}")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("setup", fn=setup),
+            Skill(
+                "orch",
+                fn=orchestrator,
+                steps=[Skill("child", fn=lambda _: StepResult(value=1))],
+            ),
+        ],
+    )
+    trace = run_skill(skill, {})
+    assert last(trace).value == "saw:setup_value"
+
+
+def test_orchestrator_children_fresh_context():
+    """Children run in a fresh SkillContext via nested run_skill."""
+
+    def setup(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="outer")
+
+    def orchestrator(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+        inner = run_skill(Skill(name="_", steps=steps), ctx.entry)
+        return last(inner)
+
+    def child(ctx: SkillContext) -> StepResult:
+        assert ctx.trace.get("setup") is None
+        return StepResult(value="child_ok")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("setup", fn=setup),
+            Skill("orch", fn=orchestrator, steps=[Skill("child", fn=child)]),
+        ],
+    )
+    trace = run_skill(skill, {})
+    assert last(trace).value == "child_ok"
 
 
 def test_orchestrator_exception_does_not_corrupt_context():
@@ -162,47 +183,29 @@ def test_orchestrator_exception_does_not_corrupt_context():
         next(it)
 
     clean = Skill(name="clean", steps=[Skill("after", fn=after)])
-    assert run_skill(clean, {}).value == "after"
+    assert last(run_skill(clean, {})).value == "after"
 
 
-def test_orchestrator_can_run_children_via_run_skill():
-    def orchestrator(ctx: SkillContext, steps: list[Skill]) -> StepResult:
-        inner = Skill(name="inner", steps=steps)
-        r = run_skill(inner, ctx.entry)
-        return StepResult(value=r.value, metadata={"ran": list(r.trace)})
+def test_orchestrator_retry_pattern():
+    call_count = 0
 
-    skill = Skill(
-        name="orch",
-        fn=orchestrator,
-        steps=[
-            Skill("a", fn=lambda _: StepResult(value=1)),
-            Skill("b", fn=lambda ctx: StepResult(value=ctx.prev.value + 1)),
-        ],
-    )
-    result = run_skill(Skill(name="s", steps=[skill]), {})
-    assert result.value == 2
-    assert result.trace["orch"].metadata["ran"] == ["a", "b"]
+    def flaky(_ctx: SkillContext) -> StepResult:
+        nonlocal call_count
+        call_count += 1
+        valid = call_count >= 2
+        return StepResult(value=f"attempt-{call_count}", meta={"valid": valid})
 
-
-def test_orchestrator_shares_outer_trace():
-    """Orchestrator receives the same ctx, so it can read prior trace entries."""
-
-    def setup(_ctx: SkillContext) -> StepResult:
-        return StepResult(value="setup_value")
-
-    def orchestrator(ctx: SkillContext, _steps: list[Skill]) -> StepResult:
-        return StepResult(value=f"saw:{ctx.trace['setup'].value}")
+    def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+        for _ in range(3):
+            r = run_skill(Skill(name="_", steps=steps), ctx.entry)
+            v = last(r)
+            if v.meta.get("valid"):
+                return v
+        return v
 
     skill = Skill(
-        name="s",
-        steps=[
-            Skill("setup", fn=setup),
-            Skill(
-                "orch",
-                fn=orchestrator,
-                steps=[Skill("child", fn=lambda _: StepResult(value=1))],
-            ),
-        ],
+        name="s", steps=[Skill("retry", fn=retry, steps=[Skill("f", fn=flaky)])]
     )
-    result = run_skill(skill, {})
-    assert result.value == "saw:setup_value"
+    trace = run_skill(skill, {})
+    assert last(trace).value == "attempt-2"
+    assert last(trace).meta["valid"] is True

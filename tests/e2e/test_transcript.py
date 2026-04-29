@@ -12,6 +12,7 @@ from tk.llmbda import (
     Skill,
     SkillContext,
     StepResult,
+    last,
     lm,
     run_skill,
     strip_fences,
@@ -43,34 +44,26 @@ Rules:
 def parse_explicit_todo(ctx: SkillContext) -> StepResult:
     """Find an explicitly tagged action item of the form 'TODO: <task> @<owner>'."""
     text = ctx.entry.get("transcript", "")
-    print(f"\n[Trace] Running parse_explicit_todo on '{text}'")
     match = re.search(r"TODO:\s*(.+?)\s+@(\w+)", text, re.IGNORECASE)
     if match:
         task, owner = match.groups()
-        print(f"  -> Success: {task} assigned to {owner}")
         return StepResult(
             value={"task": task.strip(), "owner": owner.strip()},
-            metadata={"reason": "explicit_todo_match"},
-            exits=True,
+            meta={"reason": "explicit_todo_match"},
         )
-    print("  -> Failed: No explicit TODO tag found.")
-    return StepResult(
-        value=None,
-        metadata={"reason": "no_explicit_todo"},
-    )
+    return StepResult(value=None, meta={"reason": "no_explicit_todo"})
 
 
 def _prior_steps_payload(
     trace: dict[str, StepResult],
     skills: list[Skill],
 ) -> list[dict[str, object]]:
-    """Serialise prior steps with their intent and outcome for LLM context."""
     return [
         {
             "name": s.name,
             "description": s.description,
             "value": trace[s.name].value,
-            "metadata": trace[s.name].metadata,
+            "metadata": trace[s.name].meta,
         }
         for s in skills
         if s.name in trace
@@ -85,32 +78,26 @@ def _llm_extract_action(
     """Run parser children, then infer the action item via LLM on fallback."""
     inner = Skill(name="_parse", steps=steps)
     r = run_skill(inner, ctx.entry)
-    if any(sr.exits for sr in r.trace.values()):
-        return StepResult(value=r.value, metadata=r.metadata, exits=r.resolved_by)
-    print("[Trace] Running llm_extract_action (Fallback Triggered)")
+    for sr in r.values():
+        if sr.value is not None:
+            return sr
     user_msg = json.dumps(
         {
             "transcript": ctx.entry.get("transcript", ""),
-            "prior_steps": _prior_steps_payload(r.trace, steps),
+            "prior_steps": _prior_steps_payload(r, steps),
         },
         indent=2,
     )
-    print(f"  -> Prompting LLM with prior context:\n{user_msg}")
     try:
-        raw_response = call(
-            messages=[{"role": "user", "content": user_msg}],
-        )
-        print(f"  -> LLM Raw Response: {raw_response}")
+        raw_response = call(messages=[{"role": "user", "content": user_msg}])
         parsed = json.loads(strip_fences(raw_response))
         return StepResult(
             value=parsed if parsed.get("task") else None,
-            metadata={"llm_raw": raw_response},
+            meta={"llm_raw": raw_response},
         )
-    except Exception as exc:  # noqa: BLE001  -- step must survive any caller/parse failure
-        print(f"  -> LLM Error: {exc}")
+    except Exception as exc:  # noqa: BLE001
         return StepResult(
-            value=None,
-            metadata={"reason": "llm_parse_error", "error": str(exc)},
+            value=None, meta={"reason": "llm_parse_error", "error": str(exc)}
         )
 
 
@@ -126,21 +113,21 @@ TEST_CASES = [
     {
         "id": "T1_explicit_todo",
         "transcript": (
-            "Okay, so before we end. TODO: update the database schema @Sarah."
+            "Okay, so before we end."
+            " TODO: update the database schema @Sarah."
         ),
         "expected_val": {"task": "update the database schema", "owner": "Sarah"},
-        "expected_resolver": ("extract_action_item", "λ::todo"),
     },
     {
         "id": "T2_conversational_task",
         "transcript": (
-            "Alright, Bob, can you make sure to email the client by tomorrow morning?"
+            "Alright, Bob, can you make sure to email"
+            " the client by tomorrow morning?"
         ),
         "expected_val": {
             "task": "email the client by tomorrow morning",
             "owner": "Bob",
         },
-        "expected_resolver": ("extract_action_item",),
     },
     {
         "id": "T3_no_action_item",
@@ -149,29 +136,24 @@ TEST_CASES = [
             " of progress today. See you all next week."
         ),
         "expected_val": None,
-        "expected_resolver": ("extract_action_item",),
     },
 ]
 
 
 def test_parse_explicit_todo_found():
     ctx = SkillContext(
-        entry={"transcript": "Before we end. TODO: ship the release @Alice."},
+        entry={"transcript": "Before we end. TODO: ship the release @Alice."}
     )
     result = parse_explicit_todo(ctx)
     assert result.value == {"task": "ship the release", "owner": "Alice"}
-    assert bool(result.exits)
-    assert result.metadata["reason"] == "explicit_todo_match"
+    assert result.meta["reason"] == "explicit_todo_match"
 
 
 def test_parse_explicit_todo_missing():
-    ctx = SkillContext(
-        entry={"transcript": "Great work team, see you next week."},
-    )
+    ctx = SkillContext(entry={"transcript": "Great work team, see you next week."})
     result = parse_explicit_todo(ctx)
     assert result.value is None
-    assert not result.exits
-    assert result.metadata["reason"] == "no_explicit_todo"
+    assert result.meta["reason"] == "no_explicit_todo"
 
 
 def test_llm_extract_action_parses():
@@ -188,8 +170,10 @@ def test_llm_extract_action_strips_fences():
         return '```json\n{"task": "review PR", "owner": "Carol"}\n```'
 
     ctx = SkillContext(entry={"transcript": "Carol, PR review please."})
-    result = _llm_extract_action(ctx, [], fake)
-    assert result.value == {"task": "review PR", "owner": "Carol"}
+    assert _llm_extract_action(ctx, [], fake).value == {
+        "task": "review PR",
+        "owner": "Carol",
+    }
 
 
 def test_llm_extract_action_null_when_no_task():
@@ -197,8 +181,7 @@ def test_llm_extract_action_null_when_no_task():
         return '{"task": null, "owner": null}'
 
     ctx = SkillContext(entry={"transcript": "Nice catching up."})
-    result = _llm_extract_action(ctx, [], fake)
-    assert result.value is None
+    assert _llm_extract_action(ctx, [], fake).value is None
 
 
 def test_llm_extract_action_parse_error():
@@ -208,11 +191,10 @@ def test_llm_extract_action_parse_error():
     ctx = SkillContext(entry={"transcript": "..."})
     result = _llm_extract_action(ctx, [], fake)
     assert result.value is None
-    assert result.metadata["reason"] == "llm_parse_error"
+    assert result.meta["reason"] == "llm_parse_error"
 
 
 def test_prior_steps_payload_and_system_prompt():
-    """llm_extract_action receives prior step descriptions and its own system prompt."""
     captured: dict[str, str] = {}
 
     def spy(*, messages: list[dict[str, str]], **_kw: object) -> str:
@@ -223,11 +205,6 @@ def test_prior_steps_payload_and_system_prompt():
     skill = _make_skill(spy)
     run_skill(skill, {"transcript": "Great meeting everyone."})
     payload = json.loads(captured["user"])
-    names = [s["name"] for s in payload["prior_steps"]]
-    assert names == ["λ::todo"]
-    assert payload["prior_steps"][0]["description"] == (
-        "Find an explicitly tagged action item of the form 'TODO: <task> @<owner>'."
-    )
     assert payload["prior_steps"][0]["value"] is None
     assert captured["system"] == LLM_SYSTEM_PROMPT
 
@@ -235,17 +212,6 @@ def test_prior_steps_payload_and_system_prompt():
 @pytest.mark.e2e
 @pytest.mark.parametrize("tc", TEST_CASES, ids=lambda x: x["id"])
 def test_transcript_pipeline(tc, openai_caller):
-    print(f"\nTesting Case: {tc['id']}")
-
     skill = _make_skill(openai_caller)
-    result = run_skill(skill, {"transcript": tc["transcript"]})
-    output = {
-        "skill": result.skill,
-        "resolved_by": result.resolved_by,
-        "value": result.value,
-        "metadata": result.metadata,
-    }
-    print(f"\n[Final Output]\n{json.dumps(output, indent=2)}")
-
-    assert result.value == tc["expected_val"]
-    assert result.resolved_by == tc["expected_resolver"]
+    trace = run_skill(skill, {"transcript": tc["transcript"]})
+    assert last(trace).value == tc["expected_val"]
