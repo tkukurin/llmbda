@@ -195,3 +195,133 @@ def test_step_check_missing_step_raises():
     with pytest.raises(KeyError) as exc:
         asyncio.run(checker(state, Target("x")))
     assert "nonexistent" in str(exc.value)
+
+
+class TestModelRouting:
+    """Tests verifying @lm calls route through Inspect's model."""
+
+    def _mock_model(self, responses: list[str]):
+        """Create a mock Model that returns canned responses."""
+        from unittest.mock import AsyncMock  # noqa: PLC0415
+
+        from inspect_ai.model import ModelOutput  # noqa: PLC0415
+
+        call_log: list[list] = []
+        idx = [0]
+
+        async def _generate(messages, **_kw):
+            call_log.append(list(messages))
+            text = responses[idx[0] % len(responses)]
+            idx[0] += 1
+            return ModelOutput.from_content(model="mock", content=text)
+
+        mock = AsyncMock()
+        mock.generate = _generate
+        mock.__str__ = lambda _: "mock/model"
+        return mock, call_log
+
+    def _run_with_mock(self, skill, mock_model, input_text="hello", entry=None):
+        from unittest.mock import patch  # noqa: PLC0415
+
+        kw = {"entry": entry} if entry else {}
+        solver = skill_solver(skill, **kw)
+        state = _make_state(input_text=input_text)
+        with patch("tk.llmbda.inspect._get_model", return_value=mock_model):
+            return asyncio.run(solver(state, None))
+
+    def test_lm_step_routes_through_model(self):
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        def fake_caller(*, messages, **kw):  # noqa: ARG001
+            return "should not be called"
+
+        @lm(fake_caller, system_prompt="You are helpful.")
+        def my_step(ctx: SkillContext, call) -> StepResult:
+            raw = call(messages=[{"role": "user", "content": ctx.entry}])
+            return StepResult(value=raw)
+
+        skill = Skill(name="s", steps=[Skill("lm_step", fn=my_step)])
+        model, call_log = self._mock_model(["model says hi"])
+        out = self._run_with_mock(skill, model, input_text="test input")
+
+        assert out.output.completion == "model says hi"
+        assert len(call_log) == 1
+        msgs = call_log[0]
+        assert msgs[0].content == "You are helpful."
+        assert msgs[1].content == "test input"
+
+    def test_system_prompt_preserved_through_rebind(self):
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        def orig_caller(*, messages, **kw):  # noqa: ARG001
+            return "original"
+
+        @lm(orig_caller, system_prompt="Extract dates.")
+        def extract(ctx: SkillContext, call) -> StepResult:
+            raw = call(messages=[{"role": "user", "content": ctx.entry}])
+            return StepResult(value=raw)
+
+        skill = Skill(name="s", steps=[Skill("ext", fn=extract)])
+        model, call_log = self._mock_model(["2025-01-01"])
+        out = self._run_with_mock(skill, model, input_text="jan first")
+
+        assert out.output.completion == "2025-01-01"
+        assert call_log[0][0].content == "Extract dates."
+
+    def test_non_lm_steps_unaffected_by_rebind(self):
+        def pure_step(ctx: SkillContext) -> StepResult:
+            return StepResult(value=ctx.entry.upper())
+
+        skill = Skill(name="s", steps=[Skill("upper", fn=pure_step)])
+        model, call_log = self._mock_model(["unused"])
+        out = self._run_with_mock(skill, model, input_text="hello")
+
+        assert out.output.completion == "HELLO"
+        assert call_log == []
+
+    def test_multi_step_mixed_lm_and_pure(self):
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        def normalize(ctx: SkillContext) -> StepResult:
+            return StepResult(value=ctx.entry.strip().lower())
+
+        def fake(*, messages, **kw):  # noqa: ARG001
+            return "unused"
+
+        @lm(fake, system_prompt="Classify.")
+        def classify(ctx: SkillContext, call) -> StepResult:
+            raw = call(messages=[{"role": "user", "content": ctx.prev.value}])
+            return StepResult(value=raw)
+
+        skill = Skill(
+            name="s",
+            steps=[Skill("norm", fn=normalize), Skill("cls", fn=classify)],
+        )
+        model, call_log = self._mock_model(["billing"])
+        out = self._run_with_mock(skill, model, input_text="  HELLO  ")
+
+        trace = out.metadata[DEFAULT_TRACE_KEY]
+        assert trace["norm"].value == "hello"
+        assert trace["cls"].value == "billing"
+        assert out.output.completion == "billing"
+        assert len(call_log) == 1
+        assert call_log[0][0].content == "Classify."
+        assert call_log[0][1].content == "hello"
+
+    def test_trace_still_in_metadata(self):
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        def fake(*, messages, **kw):  # noqa: ARG001
+            return "x"
+
+        @lm(fake, system_prompt="P")
+        def step(_ctx: SkillContext, call) -> StepResult:
+            return StepResult(value=call(messages=[{"role": "user", "content": "q"}]))
+
+        skill = Skill(name="s", steps=[Skill("a", fn=step)])
+        model, _ = self._mock_model(["response"])
+        out = self._run_with_mock(skill, model)
+
+        assert DEFAULT_TRACE_KEY in out.metadata
+        assert "a" in out.metadata[DEFAULT_TRACE_KEY]
+        assert out.metadata[DEFAULT_TRACE_KEY]["a"].value == "response"

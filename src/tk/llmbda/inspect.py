@@ -7,10 +7,13 @@ Requires the `inspect` extra: `pip install tk-llmbda[inspect]`.
 
 from __future__ import annotations
 
+import asyncio
 import copy
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from tk.llmbda import Skill, StepResult, last, run_skill
+from tk.llmbda import Skill, StepResult, last, lm, run_skill
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -19,6 +22,47 @@ if TYPE_CHECKING:
     from inspect_ai.solver import Solver, TaskState
 
 DEFAULT_TRACE_KEY = "llmbda.trace"
+_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+def _get_model(name: str):
+    """Lazy wrapper around inspect_ai.model.get_model (patchable in tests)."""
+    from inspect_ai.model import get_model  # noqa: PLC0415
+
+    return get_model(name)
+
+
+def _to_chat_messages(messages: list[dict[str, str]]) -> list:
+    """Convert plain dicts to Inspect ChatMessage objects."""
+    from inspect_ai.model import (  # noqa: PLC0415
+        ChatMessageAssistant,
+        ChatMessageSystem,
+        ChatMessageUser,
+    )
+
+    _cls = {
+        "system": ChatMessageSystem,
+        "user": ChatMessageUser,
+        "assistant": ChatMessageAssistant,
+    }
+    return [
+        _cls.get(m["role"], ChatMessageUser)(content=m["content"])
+        for m in messages
+    ]
+
+
+def _rebind_skill(skill: Skill, caller: Any) -> Skill:
+    """Deep-copy skill tree, replacing each @lm-bound caller."""
+    if skill.fn and hasattr(skill.fn, "lm_system_prompt"):
+        new_fn = lm(caller, system_prompt=skill.fn.lm_system_prompt)(
+            skill.fn.__wrapped__
+        )
+    else:
+        new_fn = skill.fn
+    new_steps = [_rebind_skill(s, caller) for s in skill.steps]
+    return Skill(
+        name=skill.name, fn=new_fn, steps=new_steps, description=skill.description
+    )
 
 
 def skill_solver(
@@ -27,8 +71,8 @@ def skill_solver(
     entry: Callable[[TaskState], Any] | None = None,
     trace_key: str = DEFAULT_TRACE_KEY,
 ) -> Solver:
-    """Run *skill* once per sample; expose value as completion, trace in metadata."""
-    from inspect_ai.model import ModelOutput  # noqa: PLC0415  (optional dep)
+    """Run *skill* once per sample; route @lm calls through Inspect's model."""
+    from inspect_ai.model import ModelOutput  # noqa: PLC0415
     from inspect_ai.solver import solver  # noqa: PLC0415
 
     extract = entry or (lambda s: s.input_text)
@@ -36,7 +80,26 @@ def skill_solver(
     @solver
     def _factory():
         async def solve(state, _generate):
-            trace = run_skill(skill, extract(state))
+            model_name = str(state.model)
+            use_inspect_model = "none" not in model_name
+
+            if use_inspect_model:
+                loop = asyncio.get_running_loop()
+                _model_cache: list = []
+
+                def sync_caller(*, messages: list[dict[str, str]], **_kw: Any) -> str:
+                    if not _model_cache:
+                        _model_cache.append(_get_model(model_name))
+                    coro = _model_cache[0].generate(_to_chat_messages(messages))
+                    future = asyncio.run_coroutine_threadsafe(coro, loop)
+                    return future.result().completion
+
+                patched = _rebind_skill(skill, sync_caller)
+                trace = await loop.run_in_executor(
+                    _EXECUTOR, partial(run_skill, patched, extract(state))
+                )
+            else:
+                trace = run_skill(skill, extract(state))
             final = last(trace)
             state.output = ModelOutput.from_content(
                 model=str(state.model),
