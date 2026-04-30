@@ -12,8 +12,6 @@
 
 Implements the pipeline from arXiv:2401.15884 (Yan et al., 2024):
   parse → retrieve → evaluate → action → refine → generate
-
-Plain module imported by `scoring.py`.
 """
 
 from __future__ import annotations
@@ -55,8 +53,6 @@ def _call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
     return resp.choices[0].message.content
 
 
-# -- TF-IDF retrieval helpers --------------------------------------------------
-
 _WORD_RE = re.compile(r"\w+")
 
 
@@ -83,9 +79,6 @@ def _tfidf_score(
 ) -> float:
     tf_doc = _tf(doc_tokens)
     return sum(tf_doc.get(t, 0.0) * idf.get(t, 0.0) for t in set(query_tokens))
-
-
-# -- Skill steps ---------------------------------------------------------------
 
 
 def parse_query(ctx: SkillContext) -> StepResult:
@@ -126,9 +119,6 @@ def retrieve(ctx: SkillContext) -> StepResult:
         value={"question": question, "documents": retrieved},
         meta={"scores": [s for _, s in top_k]},
     )
-
-
-# -- Scripted evaluator (runs without API keys) --------------------------------
 
 
 def _scripted_evaluate(question: str, documents: list[dict]) -> list[dict]:

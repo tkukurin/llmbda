@@ -11,11 +11,12 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 # %%
-"""Inspect AI scoring for the GSM8K solver skill.
+"""Inspect scoring for the GSM8K solver skill.
 
-Run:  GSM8K_MODEL=openai/gpt-4o-mini uv run python examples/gsm8k/scoring.py
-Limit: GSM8K_LIMIT=50 uv run python examples/gsm8k/scoring.py
-View:  uv run inspect view
+- Run: `uv run examples/gsm8k/scoring.py`
+- LLM: `GSM8K_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
+- Limit: `GSM8K_LIMIT=50 uv run examples/gsm8k/scoring.py`
+- View: `uv run inspect view`
 """
 
 import os
@@ -32,6 +33,7 @@ from tk.llmbda.inspect import passthrough_model, skill_solver, step_check, step_
 
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
 _PASSTHROUGH = passthrough_model(call_lm, name="gsm8k")
+INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _PASSTHROUGH)
 
 # %%
 _ANSWER_DELIM = "####"
@@ -74,7 +76,6 @@ eval_task = Task(
     scorer=[extraction_match, arithmetic_validity, final_match],
 )
 
-INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _PASSTHROUGH)
 print(f"model: {MODEL}, inspect_model: {INSPECT_MODEL}, samples: {len(EVAL_SAMPLES)}")
 eval_logs = inspect_eval(eval_task, model=INSPECT_MODEL, log_dir=_LOG_DIR)
 assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"  # noqa: RUF018

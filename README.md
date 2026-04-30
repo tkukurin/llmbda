@@ -227,53 +227,48 @@ uv run examples/showcase.py
 
 ## Inspect AI integration
 
-Score individual steps of a skill with [Inspect AI](https://inspect.aisi.org.uk/) scorers.
-Model calls route through Inspect's model and appear as `ModelEvent` entries
-in the per-sample transcript — full request/response pairs, token counts.
-
-- `skill_solver(skill)` wraps a skill as an Inspect `Solver`. When the
-  Inspect model isn't `none/none`, @lm steps are rebound to call Inspect's
-  model via `arun_skill` (async walker). Sync user fns work unchanged via
-  a context-propagating thread bridge.
-- `step_scorer(name, inner)` adapts any Inspect scorer to read a named step's value instead of the final completion.
-- `step_check(name, predicate)` scores a step by applying a predicate to its `StepResult`.
+- Score individual skill steps with [Inspect AI](https://inspect.aisi.org.uk/) scorers.
+- `skill_solver(skill)` wraps a skill as an Inspect `Solver`.
+- `step_scorer(name, inner)` scores a named step value instead of the final completion.
+- `step_check(name, predicate)` scores a named `StepResult`.
+- `passthrough_model(fn, name=...)` registers scripted or offline callers as Inspect models.
+- Routed calls show up in the transcript as `ModelEvent` entries and populate the `Messages` tab.
 
 ```python
 from inspect_ai import Task
+from inspect_ai import eval as inspect_eval
 from inspect_ai.scorer import match, model_graded_qa
-from tk.llmbda.inspect import skill_solver, step_scorer
+from tk.llmbda.inspect import passthrough_model, skill_solver, step_scorer
 
-Task(
+inspect_model = passthrough_model(scripted_model, name="offline")
+
+eval_task = Task(
     dataset=tickets,
     solver=skill_solver(support_triage),
     scorer=[
         step_scorer("λ::identifiers", match(location="any")),
         step_scorer("ψ::draft", model_graded_qa()),
-        match(),  # final completion
+        match(),
     ],
 )
+
+inspect_eval(eval_task, model=inspect_model, log_dir="logs")
 ```
 
-- `entry=` on `skill_solver` customises how the skill input is extracted from `TaskState` (default: `s.input_text`).
-- `project=` on `step_scorer` stringifies non-str step values before the inner scorer sees them (default: `str`; pass `json.dumps` for dicts).
-- Metrics are inherited from the inner scorer; override with `metrics=[...]`.
+- `entry=` customises how `skill_solver` reads `TaskState` (default: `s.input_text`).
+- `project=` stringifies non-`str` step values before the inner scorer sees them.
+- Metrics default to the inner scorer's metrics; override with `metrics=[...]`.
+- `inspect_eval(...)` logs land under `./logs/`.
 
 ### Install and run
 
-- **As a library user:** `pip install tk-llmbda[inspect]` — the `inspect` extra pulls in `inspect-ai`.
-- **In this repo:** `inspect-ai` is already in the dev dependency group, so `uv sync` installs it automatically.
-
-A runnable end-to-end example lives in `examples/triage/scoring.py` (the skill itself is defined in `examples/triage/skill.py` and reused by `main.py`):
-
-```bash
-# run the skill + Inspect eval (scripted model, no API keys needed)
-uv run examples/triage/scoring.py
-
-# browse per-sample traces, scorer breakdowns, and step values in the viewer
-uv run inspect view
-```
-
-Every `inspect_eval(...)` call writes a `.eval` log file under `./logs/` which `inspect view` picks up automatically.
+- Library use: `pip install tk-llmbda[inspect]`
+- Repo setup: `uv sync`
+- Examples:
+  - `uv run examples/triage/scoring.py`
+  - `uv run examples/crag/scoring.py`
+  - `uv run examples/gsm8k/scoring.py`
+  - `uv run inspect view`
 
 ## Development
 

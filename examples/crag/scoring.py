@@ -11,11 +11,11 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 # %%
-"""Inspect AI scoring for the CRAG solver skill.
+"""Inspect scoring for the CRAG solver skill.
 
-Run:  uv run python examples/crag/scoring.py
-LLM:  CRAG_MODEL=openai/gpt-4o-mini CRAG_LIMIT=50 uv run python examples/crag/scoring.py
-View: uv run inspect view
+- Run: `uv run examples/crag/scoring.py`
+- LLM: `CRAG_MODEL=openai/gpt-4o-mini CRAG_LIMIT=50 uv run examples/crag/scoring.py`
+- View: `uv run inspect view`
 """
 
 import os
@@ -80,7 +80,7 @@ EVAL_SAMPLES = hf_dataset(
 )
 
 
-# %% -- Token-level F1 scorer -------------------------------------------------
+# %%
 
 
 def _normalize(text: str) -> list[str]:
@@ -125,7 +125,7 @@ def answer_f1():
     return score
 
 
-# %% -- Exact-match scorer (case-insensitive, article-stripped) ----------------
+# %%
 
 
 @scorer(metrics=[accuracy(), stderr()])
@@ -147,7 +147,7 @@ def answer_em():
     return score
 
 
-# %% -- Retrieval evaluation accuracy -----------------------------------------
+# %%
 
 
 @scorer(metrics=[mean(), stderr()])
@@ -181,7 +181,7 @@ def retrieval_eval_quality():
     return score
 
 
-# %% -- Action correctness ----------------------------------------------------
+# %%
 
 
 @scorer(metrics=[mean(), stderr()])
@@ -214,7 +214,8 @@ def action_correctness():
     return score
 
 
-# %% -- Build task and run -----------------------------------------------------
+# %%
+
 
 eval_task = Task(
     name="crag_hotpotqa_eval",

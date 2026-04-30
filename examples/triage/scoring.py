@@ -1,10 +1,9 @@
 # %%
-"""Inspect AI scoring for the support triage skill.
+"""Inspect scoring for the support triage skill.
 
-Run:  uv run python examples/triage/scoring.py
-With LLM grader:
-  INSPECT_GRADER=openai/gpt-4o-mini uv run python examples/triage/scoring.py
-View logs:  uv run inspect view  (from examples/triage/)
+- Run: `uv run examples/triage/scoring.py`
+- Grade: `INSPECT_GRADER=openai/gpt-4o-mini uv run examples/triage/scoring.py`
+- View: `uv run inspect view`
 """
 
 import os
@@ -27,17 +26,27 @@ from inspect_ai.scorer import (
     stderr,
 )
 from inspect_ai.solver import TaskState
-from skill import CLASSIFY, DRAFT, IDENTIFIERS, SUMMARIZE, TICKETS, support_triage
+from skill import (
+    CLASSIFY,
+    DRAFT,
+    IDENTIFIERS,
+    SUMMARIZE,
+    TICKETS,
+    scripted_support_model,
+    support_triage,
+)
 
-from tk.llmbda.inspect import skill_solver, step_scorer
+from tk.llmbda.inspect import passthrough_model, skill_solver, step_scorer
 
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
+_PASSTHROUGH = passthrough_model(scripted_support_model, name="triage")
+INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _PASSTHROUGH)
 
 # %%
 EXPECTED = {
     "SUP-1001": ("billing_refund", "P2"),
     "SUP-1002": ("production_incident", "P0"),
-    "SUP-1003": ("account_access", "P1"),  # mis-expects P1 so one cell fails
+    "SUP-1003": ("account_access", "P1"),
 }
 
 EVAL_SAMPLES = [
@@ -53,7 +62,7 @@ EVAL_SAMPLES = [
 
 # %%
 def _trace(state: TaskState) -> dict:
-    return (state.metadata or {}).get("llmbda.trace", {})  # Trace dict
+    return (state.metadata or {}).get("llmbda.trace", {})
 
 
 classify_matches_intent = step_scorer(
@@ -77,7 +86,7 @@ def draft_priority_scorer():
     return score
 
 
-# %% LLM-graded reply quality (requires INSPECT_GRADER env var)
+# %%
 REPLY_QUALITY_TEMPLATE = """\
 You are evaluating a customer support reply for quality.
 
@@ -105,10 +114,10 @@ if grader := os.environ.get(gradevar := "INSPECT_GRADER"):
     g = model_graded_qa(template=REPLY_QUALITY_TEMPLATE, model=grader)
     draft_reply_quality = step_scorer(DRAFT, g, project=lambda v: v["customer_reply"])
 else:
-    print(f"[W] env: `set {gradevar}` to run model judge")
+    print(f"[W] env: export {gradevar}=openai/gpt-4o-mini")
 
 
-# %% Heuristic reply scorer — partial credit (0.0 / 0.5 / 1.0)
+# %%
 _ISSUE_KW = ["refund", "charge", "outage", "escalat", "access", "restore"]
 
 
@@ -177,7 +186,12 @@ eval_task = Task(
     scorer=_scorers,
 )
 
-eval_logs = inspect_eval(eval_task, model="none/none", display="none", log_dir=_LOG_DIR)
+eval_logs = inspect_eval(
+    eval_task,
+    model=INSPECT_MODEL,
+    display="none",
+    log_dir=_LOG_DIR,
+)
 assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"  # noqa: RUF018
 
 # %%
