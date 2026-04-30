@@ -1,19 +1,20 @@
 # tk.llmbda
 
 Skill composition for LLM pipelines. Chain deterministic and LLM-powered
-steps into a skill; the runtime walks them in order until one resolves.
+steps into a skill; the runtime walks them in order and returns an ordered
+trace dict.
 
 ## Deterministic skill
 
 ```python
-from tk.llmbda import Skill, SkillContext, run_skill
+from tk.llmbda import Skill, SkillContext, last, run_skill
 
 def greet(ctx: SkillContext) -> str:
     return f"hello, {ctx.entry.get('name', 'world')}"
 
 skill = Skill(name="greeter", steps=[greet])
-result = run_skill(skill, name="λ")
-# SkillResult(skill="greeter", resolved_by=("greet",), value="hello, λ", ...)
+trace = run_skill(skill, name="λ")
+# last(trace).value == "hello, λ"
 ```
 
 Step fns that return a non-`StepResult` are auto-wrapped as
@@ -23,23 +24,23 @@ the `ctx.entry` dict.
 
 ## LLM skill
 
-Self-contained with a fake model so the snippet runs as-is:
-
 ```python
-from tk.llmbda import Skill, SkillContext, StepResult, lm, run_skill
+from litellm import completion
+from tk.llmbda import Skill, SkillContext, StepResult, last, lm, run_skill
 
-def fake_model(*, messages, **_):
-    return "2025-01-15"
+def call_lm(*, messages, **kw):
+    resp = completion(model="gpt-4o-mini", messages=messages, **kw)
+    return resp.choices[0].message.content
 
-@lm(fake_model, system_prompt="Extract a date. Return ISO format.")
+@lm(call_lm, system_prompt="Extract a date. Return ISO format.")
 def extract_date(ctx: SkillContext, call) -> StepResult:
     """Extract a date from natural language."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
-    return StepResult(value=raw)
+    return StepResult(value=raw.strip())
 
 skill = Skill(name="dates", steps=[Skill("extract", fn=extract_date)])
-result = run_skill(skill, text="let's meet on the 15th of January 2025")
-# SkillResult(skill="dates", resolved_by=("extract",), value="2025-01-15", ...)
+trace = run_skill(skill, text="let's meet on the 15th of January 2025")
+# last(trace).value == "2025-01-15"
 ```
 
 ## Multi-step with `ctx.prev`
@@ -47,7 +48,7 @@ result = run_skill(skill, text="let's meet on the 15th of January 2025")
 Each step can access the previous step's result via `ctx.prev`:
 
 ```python
-from tk.llmbda import Skill, SkillContext, run_skill
+from tk.llmbda import Skill, SkillContext, last, run_skill
 
 def double(ctx: SkillContext) -> int:
     return ctx.entry["x"] * 2
@@ -56,32 +57,65 @@ def add_ten(ctx: SkillContext) -> int:
     return ctx.prev.value + 10
 
 skill = Skill(name="math", steps=[double, add_ten])
-result = run_skill(skill, x=5)
-# result.value == 20
+trace = run_skill(skill, x=5)
+# last(trace).value == 20
 ```
 
-Before any step runs, `ctx.prev` is the `ROOT` sentinel (`ROOT.value is None`).
-Use `ctx.prev is ROOT` to check if you're the first step.
+Before any step runs, `ctx.prev` is an empty `StepResult()` (i.e.
+`ctx.prev.value is None`).
 
-## Short-circuit with `resolved=True`
+## `run_skill` returns a `Trace`
 
-Steps fall through by default (`resolved=False`). Set `resolved=True` to
-stop early — remaining steps are skipped:
+`run_skill` returns an ordered dict mapping step names to their
+`StepResult`. Use `last(trace)` to get the final step's result:
 
 ```python
-def try_cache(ctx: SkillContext) -> StepResult:
-    if ctx.entry.get("key") in CACHE:
-        return StepResult(value=CACHE[ctx.entry["key"]], resolved=True)
-    return StepResult(value=None)
-
-def expensive(ctx: SkillContext) -> StepResult:
-    return StepResult(value=compute(ctx.entry))
-
-skill = Skill(name="s", steps=[Skill("cache", fn=try_cache), Skill("compute", fn=expensive)])
-# run_skill(skill, key="known-key")
+trace = run_skill(skill, x=5)
+trace["double"].value   # 10
+trace["add_ten"].value  # 20
+last(trace).value       # 20
 ```
 
-Use explicit `StepResult` when you need `resolved`, `metadata`, or `resolved_by`.
+## Control flow via orchestrators
+
+Steps always fall through by default — every step in a flat pipeline runs.
+For early-exit, retry, or branching, use an orchestrator: a skill with
+both `fn` and `steps`. The `fn` receives children as a second argument and
+controls how they execute.
+
+### `fst_match` — built-in first-non-None orchestrator
+
+```python
+from tk.llmbda import Skill, fst_match, last, run_skill
+
+skill = Skill(
+    name="cached",
+    fn=fst_match,
+    steps=[Skill("cache", fn=try_cache), Skill("compute", fn=expensive)],
+)
+trace = run_skill(Skill(name="s", steps=[skill]), key="known-key")
+# last(trace).value == "cached-value"
+```
+
+### Custom orchestrators
+
+Retry pattern:
+
+```python
+def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+    """Run children up to 3 times until valid."""
+    inner = Skill(name="_", steps=steps)
+    for attempt in range(1, 4):
+        r = run_skill(inner, ctx.entry)
+        v = last(r)
+        if v.meta.get("valid"):
+            return StepResult(value=v.value, meta={"attempts": attempt})
+    return StepResult(value=v.value, meta={"valid": False, "attempts": 3})
+```
+
+- Leaf fns are `(ctx) -> StepResult`. Orchestrator fns are `(ctx, steps) -> StepResult`.
+- Children run in a fresh `SkillContext` (via `run_skill`), so they don't
+  see the outer trace. Pass data through `entry` if needed.
 
 ## Nested composition
 
@@ -105,67 +139,48 @@ skill = Skill(
 
 The runtime walks composites via DFS. All leaves share a single `ctx.trace`.
 
-## Orchestrator: `fn` + `steps`
-
-A skill with both `fn` and `steps` is an orchestrator — `fn` receives the
-children as an explicit second argument and controls how they execute:
+## `ctx.trace` — cross-step access by name
 
 ```python
-def retry(ctx: SkillContext, steps: list[Skill]) -> StepResult:
-    """Run children up to 3 times until valid."""
-    inner = Skill(name="inner", steps=steps)
-    for attempt in range(1, 4):
-        r = run_skill(inner, ctx.entry)
-        if r.metadata.get("valid"):
-            return StepResult(value=r.value, metadata={"attempts": attempt}, resolved_by=r.resolved_by)
-    return StepResult(value=r.value, metadata={"valid": False}, resolved_by=r.resolved_by)
+from tk.llmbda import Skill, SkillContext, run_skill
 
-skill = Skill(
-    name="retry",
-    fn=retry,
-    steps=[
-        Skill("ψ::extract", fn=extract_date_llm),
-        Skill("ψ::verify", fn=verify_date),
-    ],
-)
+def extract(ctx: SkillContext) -> str:
+    return ctx.entry["text"].upper()
+
+def summarize(ctx: SkillContext) -> str:
+    return f"extracted: {ctx.trace['extract'].value}"
+
+skill = Skill(name="pipe", steps=[
+    Skill("extract", fn=extract),
+    Skill("summarize", fn=summarize),
+])
+trace = run_skill(skill, text="hello")
+# last(trace).value == "extracted: HELLO"
 ```
 
-- Leaf fns are `(ctx) -> StepResult`. Orchestrator fns are `(ctx, steps) -> StepResult`.
-- Children run in a fresh `SkillContext` (via `run_skill`), so they don't
-  see the outer trace. Pass data through `entry` if needed.
+Use `ctx.trace.get("key")` for optional lookups; missing keys raise an
+informative `KeyError`.
 
-## Static validation
-
-`check_skill` catches trace-key typos and forward references at definition
-time via AST analysis:
+## `iter_skill` — streaming / early break
 
 ```python
-from tk.llmbda import check_skill
+from tk.llmbda import Skill, iter_skill
 
-issues = check_skill(skill)
-# ["'bad_step' references undeclared trace key 'typo'"]
+skill = Skill(name="s", steps=[step_a, step_b, step_c])
+for name, result in iter_skill(skill, {"x": 1}):
+    print(name, result.value)
+    if some_condition(result):
+        break
 ```
 
-- Validates orchestrator children as a separate scope.
-- Checks `ctx.trace["key"]` and `ctx.trace.get("key")` patterns.
+## Test re-binding
 
-## Concepts
+```python
+from tk.llmbda import lm
 
-- **`Skill`** — recursive composition primitive. Leaf (`fn`), composite (`steps`), or orchestrator (`fn` + `steps`).
-- **`StepResult.resolved`** — defaults to `False`; steps fall through. Set `True` to short-circuit.
-- **`StepResult.resolved_by`** — inner resolution path as `tuple[str, ...]`. Orchestrators propagate it from nested `run_skill` calls; `SkillResult.resolved_by` prepends the step name, building a hierarchical path like `("orchestrator", "inner_step")`.
-- **Implicit `StepResult`** — step fns can return any value; non-`StepResult` returns are wrapped as `StepResult(value=x)`. Use explicit `StepResult` for `resolved`, `metadata`, or `resolved_by`.
-- **Bare callables in `steps`** — `steps=[my_fn]` auto-wraps to `Skill(name=fn.__name__, fn=my_fn)`. Use explicit `Skill(name, fn=...)` for custom names.
-- **`run_skill` / `iter_skill` kwargs** — `run_skill(skill, name="λ")` is sugar for `run_skill(skill, {"name": "λ"})`.
-- **`ctx.prev`** — most recently executed step's `StepResult`. Starts as `ROOT` (`value=None`).
-- **`ctx.trace`** — dict of all prior results keyed by step name. Raises informative `KeyError` on miss; use `.get()` for optional lookups.
-- **`ctx.entry`** — the original input passed to `run_skill`.
-- **`@lm(model, system_prompt=...)`** — binds model at decoration time. Decorated fn is `(ctx, call)` for leaves or `(ctx, steps, call)` for orchestrators; `call` prepends `system_prompt`.
-- **`Skill.description`** — human-readable summary; falls back to fn docstring. Separate from `@lm` system prompts (read those via `fn.lm_system_prompt`).
-- **`StepResult.metadata`** — auxiliary context: reasons, raw provider output, confidence.
-- **`iter_skill`** — same as `run_skill` but yields `(name, result)` per step for streaming or early exit.
-- **`check_skill`** — static validation of trace-key references. Catches typos and forward refs.
-- **Test re-binding** — `lm(fake)(my_step.__wrapped__)` re-decorates with a different model.
+fake_model = lambda *, messages, **kw: "2025-01-15"
+testable = lm(fake_model)(extract_date.__wrapped__)
+```
 
 ## Examples
 
@@ -177,11 +192,59 @@ uv run examples/date_extraction.py
 uv run examples/calendar_booking.py
 
 # support triage: extraction, classification, validation loop
-uv run examples/support_triage.py
+uv run examples/triage/main.py
+
+# same skill, scored step-by-step with Inspect AI (see section below)
+uv run examples/triage/scoring.py
 
 # all 20 use cases in one file (no external deps)
 uv run examples/showcase.py
 ```
+
+## Inspect AI integration
+
+Score individual steps of a skill with [Inspect AI](https://inspect.aisi.org.uk/) scorers.
+
+- `skill_solver(skill)` wraps a skill as an Inspect `Solver`. Final value becomes the completion; full trace lands in `state.metadata["llmbda.trace"]`.
+- `step_scorer(name, inner)` adapts any Inspect scorer to read a named step's value instead of the final completion.
+- `step_check(name, predicate)` scores a step by applying a predicate to its `StepResult`.
+
+```python
+from inspect_ai import Task
+from inspect_ai.scorer import match, model_graded_qa
+from tk.llmbda.inspect import skill_solver, step_scorer
+
+Task(
+    dataset=tickets,
+    solver=skill_solver(support_triage),
+    scorer=[
+        step_scorer("λ::identifiers", match(location="any")),
+        step_scorer("ψ::draft", model_graded_qa()),
+        match(),  # final completion
+    ],
+)
+```
+
+- `entry=` on `skill_solver` customises how the skill input is extracted from `TaskState` (default: `s.input_text`).
+- `project=` on `step_scorer` stringifies non-str step values before the inner scorer sees them (default: `str`; pass `json.dumps` for dicts).
+- Metrics are inherited from the inner scorer; override with `metrics=[...]`.
+
+### Install and run
+
+- **As a library user:** `pip install tk-llmbda[inspect]` — the `inspect` extra pulls in `inspect-ai`.
+- **In this repo:** `inspect-ai` is already in the dev dependency group, so `uv sync` installs it automatically.
+
+A runnable end-to-end example lives in `examples/triage/scoring.py` (the skill itself is defined in `examples/triage/skill.py` and reused by `main.py`):
+
+```bash
+# run the skill + Inspect eval (scripted model, no API keys needed)
+uv run examples/triage/scoring.py
+
+# browse per-sample traces, scorer breakdowns, and step values in the viewer
+uv run inspect view
+```
+
+Every `inspect_eval(...)` call writes a `.eval` log file under `./logs/` which `inspect view` picks up automatically.
 
 ## Development
 

@@ -14,7 +14,7 @@ import re
 
 from litellm import completion
 
-from tk.llmbda import Skill, SkillContext, StepResult, lm, run_skill
+from tk.llmbda import Skill, SkillContext, StepResult, last, lm, run_skill
 
 _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
@@ -22,24 +22,24 @@ _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 def extract_date_regex(ctx: SkillContext) -> StepResult:
     """Pull an ISO-8601 date via regex."""
     if m := _ISO_RE.search(ctx.entry["text"]):
-        return StepResult(m.group(1), {"source": "regex"}, resolved=True)
-    return StepResult(None, {"reason": "no_iso_date"})
+        return StepResult(value=m.group(1), meta={"source": "regex"})
+    return StepResult(meta={"reason": "no_iso_date"})
 
 
-def llm(*, messages, **kwargs):
+def llm_caller(*, messages, **kwargs):
     resp = completion(model="gpt-4o-mini", messages=messages, **kwargs)
     return resp.choices[0].message.content
 
 
-@lm(llm, system_prompt="Extract a date from the text. Return ONLY an ISO-8601 date.")
+@lm(llm_caller, system_prompt="Extract a date. Return ONLY an ISO-8601 date.")
 def extract_date_lm(ctx: SkillContext, call) -> StepResult:
     """Extract a date via LLM."""
     raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
-    return StepResult(raw.strip(), {"source": "lm"})
+    return StepResult(value=raw.strip(), meta={"source": "lm"})
 
 
 @lm(
-    llm,
+    llm_caller,
     system_prompt=(
         "The previous extraction attempt was not a valid ISO-8601 date. "
         "Re-read the original text and try again. Return ONLY YYYY-MM-DD."
@@ -51,10 +51,11 @@ def refine_date(ctx: SkillContext, call) -> StepResult:
     value = prev.value if prev else None
     for _ in range(3):
         if value and _ISO_RE.fullmatch(str(value)):
-            return StepResult(value, {"valid": True})
+            return StepResult(value=value, meta={"valid": True})
         prompt = f"Text: {ctx.entry['text']}\nPrevious attempt: {value}"
         value = call(messages=[{"role": "user", "content": prompt}]).strip()
-    return StepResult(value, {"valid": bool(value and _ISO_RE.fullmatch(str(value)))})
+    valid = bool(value and _ISO_RE.fullmatch(str(value)))
+    return StepResult(value=value, meta={"valid": valid})
 
 
 skill = Skill(
@@ -66,8 +67,9 @@ skill = Skill(
     ],
 )
 
-result = run_skill(skill, text="let's meet on the 15th of January 2025")
-print(f"resolved_by: {result.resolved_by}")
-print(f"value:       {result.value}")
-# resolved_by: ('ψ::refine',)
-# value:       2025-01-15
+trace = run_skill(skill, text="let's meet on the 15th of January 2025")
+result = last(trace)
+print(f"value: {result.value}")
+print(f"meta:  {result.meta}")
+# value: 2025-01-15
+# meta:  {'valid': True}
