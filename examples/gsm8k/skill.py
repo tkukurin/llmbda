@@ -158,6 +158,7 @@ __all__ = [
     "REASON",
     "REPAIR",
     "VERIFY",
+    "call_lm",
     "gsm8k_solver",
     "run_skill",
 ]
