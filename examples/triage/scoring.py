@@ -8,6 +8,7 @@ View logs:  uv run inspect view  (from examples/triage/)
 """
 
 import os
+from pathlib import Path
 
 from inspect_ai import Task
 from inspect_ai import eval as inspect_eval
@@ -29,6 +30,8 @@ from inspect_ai.solver import TaskState
 from skill import CLASSIFY, DRAFT, IDENTIFIERS, SUMMARIZE, TICKETS, support_triage
 
 from tk.llmbda.inspect import skill_solver, step_scorer
+
+_LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
 
 # %%
 EXPECTED = {
@@ -174,7 +177,7 @@ eval_task = Task(
     scorer=_scorers,
 )
 
-eval_logs = inspect_eval(eval_task, model="none/none", display="none")
+eval_logs = inspect_eval(eval_task, model="none/none", display="none", log_dir=_LOG_DIR)
 assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"  # noqa: RUF018
 
 # %%
