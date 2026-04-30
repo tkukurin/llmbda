@@ -168,9 +168,7 @@ async def _awalk(
     if skill.fn:
         if asyncio.iscoroutinefunction(skill.fn):
             result = (
-                await skill.fn(ctx, skill.steps)
-                if skill.steps
-                else await skill.fn(ctx)
+                await skill.fn(ctx, skill.steps) if skill.steps else await skill.fn(ctx)
             )
         else:
             result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)

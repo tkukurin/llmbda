@@ -306,9 +306,7 @@ class TestAsyncLmDecorator:
 
         @lm(model_b, system_prompt="pb")
         async def step_b(ctx: SkillContext, call) -> StepResult:
-            r = await call(
-                messages=[{"role": "user", "content": ctx.prev.value}]
-            )
+            r = await call(messages=[{"role": "user", "content": ctx.prev.value}])
             return StepResult(value=r)
 
         skill = Skill(name="s", steps=[Skill("a", fn=step_a), Skill("b", fn=step_b)])

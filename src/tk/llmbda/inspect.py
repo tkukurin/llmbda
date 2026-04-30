@@ -51,8 +51,7 @@ def _to_chat_messages(messages: list[dict[str, str]]) -> list:
         "assistant": ChatMessageAssistant,
     }
     return [
-        _cls.get(m["role"], ChatMessageUser)(content=m["content"])
-        for m in messages
+        _cls.get(m["role"], ChatMessageUser)(content=m["content"]) for m in messages
     ]
 
 
@@ -95,6 +94,7 @@ def _rebind_skill_async(skill: Skill, async_caller: Callable[..., Any]) -> Skill
             async def new_fn(ctx, *args):
                 return await original(ctx, *args, bound)
         else:
+
             @wraps(original)
             async def new_fn(ctx, *args):
                 # Sync user fn expects sync `call` — run it in a thread with
@@ -107,9 +107,7 @@ def _rebind_skill_async(skill: Skill, async_caller: Callable[..., Any]) -> Skill
                     coro = bound(messages=messages, **kw)
                     return _await_in_context(loop, coro, parent_ctx)
 
-                return await loop.run_in_executor(
-                    None, original, ctx, *args, sync_call
-                )
+                return await loop.run_in_executor(None, original, ctx, *args, sync_call)
 
         new_fn.lm_system_prompt = sys_prompt  # type: ignore[attr-defined]
         new_fn.lm_model = skill.fn.lm_model  # type: ignore[attr-defined]
