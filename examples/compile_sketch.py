@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "litellm>=1.0",
 #     "tk-llmbda",
 # ]
 #
@@ -31,7 +30,7 @@ from tk.llmbda import Skill
 
 
 def _is_lm(skill: Skill) -> bool:
-    return skill.fn is not None and bool(getattr(skill.fn, "lm_system_prompt", None))
+    return skill.fn is not None and hasattr(skill.fn, "lm_model")
 
 
 def _source_for(fn: Any) -> str:
@@ -71,7 +70,7 @@ class _CtxCollector(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if (
-            node.attr in ("value", "metadata", "resolved")
+            node.attr in ("value", "meta")
             and isinstance(node.value, ast.Attribute)
             and isinstance(node.value.value, ast.Name)
             and node.value.value.id == "ctx"
@@ -115,6 +114,10 @@ class _CtxCollector(ast.NodeVisitor):
 class _RewriteBody(ast.NodeTransformer):
     """Second pass: rewrite ctx accesses and StepResult returns."""
 
+    def __init__(self) -> None:
+        self._trace_aliases: dict[str, str] = {}
+        self._prev_aliases: set[str] = set()
+
     @staticmethod
     def _trace_key(node: ast.AST) -> str | None:
         """Extract key from ctx.trace["k"] or ctx.trace.get("k")."""
@@ -143,21 +146,72 @@ class _RewriteBody(ast.NodeTransformer):
             return node.args[0].value
         return None
 
+    @staticmethod
+    def _is_prev(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "ctx"
+            and node.attr == "prev"
+        )
+
+    @staticmethod
+    def _has_value(node: ast.AST | None) -> bool:
+        return node is not None and not (
+            isinstance(node, ast.Constant) and node.value is None
+        )
+
+    def _set_alias(self, name: str, value: ast.AST) -> None:
+        if key := self._trace_key(value):
+            self._trace_aliases[name] = key
+            self._prev_aliases.discard(name)
+            return
+        if self._is_prev(value):
+            self._prev_aliases.add(name)
+            self._trace_aliases.pop(name, None)
+            return
+        self._trace_aliases.pop(name, None)
+        self._prev_aliases.discard(name)
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self._set_alias(target.id, node.value)
+        self.generic_visit(node)
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST:
+        if isinstance(node.target, ast.Name) and node.value is not None:
+            self._set_alias(node.target.id, node.value)
+        self.generic_visit(node)
+        return node
+
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
-        # ctx.trace["k"].value / .metadata  →  k / k_metadata
-        if node.attr in ("value", "metadata"):
+        if isinstance(node.value, ast.Name) and node.attr in ("value", "meta"):
+            alias = node.value.id
+            if alias in self._trace_aliases:
+                name = _sanitize(self._trace_aliases[alias])
+                if node.attr != "value":
+                    name = f"{name}_{node.attr}"
+                return ast.copy_location(ast.Name(id=name, ctx=ast.Load()), node)
+            if alias in self._prev_aliases:
+                return ast.copy_location(
+                    ast.Name(id=f"prev_{node.attr}", ctx=ast.Load()),
+                    node,
+                )
+        if node.attr in ("value", "meta"):
             key = self._trace_key(node.value)
             if key is not None:
                 name = _sanitize(key)
                 if node.attr != "value":
                     name = f"{name}_{node.attr}"
                 return ast.copy_location(ast.Name(id=name, ctx=ast.Load()), node)
-        # ctx.prev.value  →  prev_value
         if (
             isinstance(node.value, ast.Attribute)
             and isinstance(node.value.value, ast.Name)
             and node.value.value.id == "ctx"
             and node.value.attr == "prev"
+            and node.attr in ("value", "meta")
         ):
             return ast.copy_location(
                 ast.Name(id=f"prev_{node.attr}", ctx=ast.Load()),
@@ -219,10 +273,11 @@ class _RewriteBody(ast.NodeTransformer):
             args = node.value.args
             kw = {k.arg: k.value for k in node.value.keywords}
             value = args[0] if args else kw.get("value", ast.Constant(value=None))
-            meta = args[1] if len(args) > 1 else kw.get("metadata")
-            if meta:
+            meta = args[1] if len(args) > 1 else kw.get("meta") or kw.get("metadata")
+            if self._has_value(meta):
+                assert meta is not None
                 node.value = ast.Dict(
-                    keys=[ast.Constant(value="value"), ast.Constant(value="metadata")],
+                    keys=[ast.Constant(value="value"), ast.Constant(value="meta")],
                     values=[value, meta],
                 )
             else:
@@ -249,14 +304,14 @@ def _strip_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
-def rewrite_step_source(fn: Any) -> str:
+def rewrite_step_source(fn: Any) -> str | None:
     """Rewrite a step fn's source to remove framework boilerplate.
 
     - Replaces ctx.entry["key"] with a direct *key* parameter.
     - Replaces ctx.trace["name"].value with a *name* parameter.
     - Replaces ctx.prev.value with a *prev_value* parameter.
     - Unwraps StepResult(value, ...) returns to bare value returns.
-    - Strips the docstring (shown separately), decorators, and return annotation.
+    - Strips the docstring, decorators, and return annotation.
     """
     source = _source_for(fn)
     if not source:
@@ -363,22 +418,15 @@ if __name__ == "__main__":
     import json
     import re
 
-    from litellm import completion
-
     from tk.llmbda import (
         LMCaller,
         SkillContext,
         StepResult,
+        last,
         lm,
         run_skill,
         strip_fences,
     )
-
-    MODEL = "gpt-4o-mini"
-
-    def call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
-        resp = completion(model=MODEL, messages=messages, **kw)
-        return resp.choices[0].message.content
 
     WEEKDAYS = (
         "monday",
@@ -389,57 +437,124 @@ if __name__ == "__main__":
         "saturday",
         "sunday",
     )
+    _TIME_RE = re.compile(
+        r"\b(\d{1,2})(?::(\d{2}))?(?:\s*-\s*(\d{1,2})(?::(\d{2}))?)?\s*(am|pm)?\b",
+        re.IGNORECASE,
+    )
+    _DUR_RE = re.compile(
+        r"(\d+(?:\.\d+)?)\s*(hour|hr|hrs|minute|min|mins)s?\b",
+        re.IGNORECASE,
+    )
+    _TOPIC_RE = re.compile(r"(?:about|re:)\s+(.+?)(?:[.!?]|$)", re.IGNORECASE)
 
     def parse_weekday(ctx: SkillContext) -> StepResult:
         """Find an explicit weekday name (Monday..Sunday)."""
         text = ctx.entry["text"].lower()
         for day in WEEKDAYS:
             if re.search(rf"\b{day}\b", text):
-                return StepResult(day.capitalize(), {"reason": "matched"})
-        return StepResult(None, {"reason": "no_weekday"})
+                return StepResult(value=day.capitalize(), meta={"reason": "matched"})
+        return StepResult(meta={"reason": "no_weekday"})
 
-    def parse_time(_ctx: SkillContext) -> StepResult:
+    def _fmt(h: int, m: int, ampm: str | None) -> str:
+        return f"{h}:{m:02d}{ampm.lower()}" if ampm else f"{h:02d}:{m:02d}"
+
+    def parse_time(ctx: SkillContext) -> StepResult:
         """Find a clock time like '3pm', '15:00', or a range '9-10am'."""
-        return StepResult(None, {"reason": "no_time"})
+        match = _TIME_RE.search(ctx.entry["text"])
+        if not match:
+            return StepResult(meta={"reason": "no_time"})
+        h1, min1, h2, min2, ampm = match.groups()
+        start = _fmt(int(h1), int(min1 or 0), ampm)
+        end = _fmt(int(h2), int(min2 or 0), ampm) if h2 else None
+        return StepResult(value={"start": start, "end": end}, meta={"range": bool(end)})
 
-    def parse_duration(_ctx: SkillContext) -> StepResult:
-        """Find a duration phrase like '30 minutes' or '2 hrs'."""
-        return StepResult(None, {"reason": "no_duration"})
+    def parse_duration(ctx: SkillContext) -> StepResult:
+        """Find a duration phrase like '30 minutes' or '2 hrs' and return minutes."""
+        match = _DUR_RE.search(ctx.entry["text"])
+        if not match:
+            return StepResult(meta={"reason": "no_duration"})
+        n, unit = float(match.group(1)), match.group(2).lower()
+        minutes = int(n * 60) if unit.startswith(("hour", "hr")) else int(n)
+        return StepResult(value=minutes, meta={"reason": "matched"})
 
-    def parse_topic(_ctx: SkillContext) -> StepResult:
+    def parse_topic(ctx: SkillContext) -> StepResult:
         """Find a topic phrase introduced by 'about' or 're:'."""
-        return StepResult(None, {"reason": "no_topic"})
+        match = _TOPIC_RE.search(ctx.entry["text"])
+        if not match:
+            return StepResult(meta={"reason": "no_topic"})
+        return StepResult(value=match.group(1).strip(), meta={"reason": "matched"})
 
-    VERIFY_PROMPT = (
-        "You are a calendar booking verifier. Cross-check the prior "
-        "findings against the text: confirm, correct, fill gaps, "
-        "flag ambiguity. Respond with a JSON object."
-    )
+    VERIFY_PROMPT = """\
+You are a calendar booking verifier.
+Input JSON has "text" (original request) and "prior_steps" (each parser's
+name/description/value/meta). Cross-check the prior findings against
+the text: confirm, correct, fill gaps (no invention), flag ambiguity.
 
-    @lm(call_lm, system_prompt=VERIFY_PROMPT)
-    def verify(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
-        """Cross-check parser extractions against the raw text."""
-        inner = Skill(name="_parse", steps=steps)
-        r = run_skill(inner, ctx.entry)
-        payload = json.dumps(
+Return ONLY JSON:
+{
+  "booking": {"weekday": ..., "start": ..., "end": ..., "minutes": ..., "topic": ...},
+  "notes": "<one sentence>"
+}
+"""
+    _CANNED_BOOKINGS = {
+        "Thursday at 3pm about Q3 planning": {
+            "booking": {
+                "weekday": "Thursday",
+                "start": "3:00pm",
+                "end": None,
+                "minutes": None,
+                "topic": "Q3 planning",
+            },
+            "notes": (
+                "The request includes weekday, start time, and topic but no duration."
+            ),
+        }
+    }
+
+    def scripted_booking_caller(
+        *, messages: list[dict[str, str]], **_kw: object
+    ) -> str:
+        """Scripted LMCaller for examples; returns a JSON string."""
+        user_msg = messages[1]["content"]
+        for key, payload in _CANNED_BOOKINGS.items():
+            if key in user_msg:
+                return json.dumps(payload)
+        return json.dumps(
+            {"booking": {}, "notes": "No canned response for this input."}
+        )
+
+    def _prior_payload(
+        trace: dict[str, StepResult],
+        skills: list[Skill],
+    ) -> list[dict[str, object]]:
+        return [
             {
-                "text": ctx.entry["text"],
-                "prior_steps": [
-                    {
-                        "name": s.name,
-                        "description": s.description,
-                        "value": r.trace[s.name].value,
-                    }
-                    for s in steps
-                    if s.name in r.trace
-                ],
+                "name": skill.name,
+                "description": skill.description,
+                "value": trace[skill.name].value,
+                "meta": trace[skill.name].meta,
             }
-        )
+            for skill in skills
+            if skill.name in trace
+        ]
+
+    @lm(scripted_booking_caller, system_prompt=VERIFY_PROMPT)
+    def verify(ctx: SkillContext, steps: list[Skill], call: LMCaller) -> StepResult:
+        """Run parser children, cross-check extractions against the raw text."""
+        inner = Skill(name="_parse", steps=steps)
+        trace = run_skill(inner, ctx.entry)
+        payload = {
+            "text": ctx.entry["text"],
+            "prior_steps": _prior_payload(trace, steps),
+        }
         raw = call(
-            messages=[{"role": "user", "content": payload}],
-            response_format={"type": "json_object"},
+            messages=[{"role": "user", "content": json.dumps(payload, indent=2)}]
         )
-        return StepResult(json.loads(strip_fences(raw)))
+        parsed = json.loads(strip_fences(raw))
+        return StepResult(
+            value=parsed.get("booking"),
+            meta={"notes": parsed.get("notes", ""), "llm_raw": raw},
+        )
 
     book_meeting = Skill(
         name="book_meeting",
@@ -452,14 +567,22 @@ if __name__ == "__main__":
         ],
     )
 
-    print(compile_skill(book_meeting))
+    compiled_booking = compile_skill(book_meeting)
+    print(compiled_booking)
+    assert "# book_meeting" in compiled_booking
+    assert "## λ::weekday" in compiled_booking
+    assert "def parse_weekday(text):" in compiled_booking
+    assert VERIFY_PROMPT.strip() in compiled_booking
 
-    result = run_skill(
-        book_meeting, text="Let's meet Thursday at 3pm about Q3 planning"
+    booking_trace = run_skill(
+        Skill(name="s", steps=[book_meeting]),
+        text="Let's meet Thursday at 3pm about Q3 planning",
     )
-    assert isinstance(result.value, dict)  # LLM verify returns parsed JSON
-    assert "book_meeting" in result.trace  # orchestrator is a single trace entry
-    print("book_meeting result:", result.value)
+    booking_result = last(booking_trace)
+    assert isinstance(booking_result.value, dict)
+    assert booking_result.value["weekday"] == "Thursday"
+    assert booking_result.meta["notes"]
+    print("book_meeting result:", booking_result.value)
 
     print("=" * 60)
 
@@ -467,36 +590,44 @@ if __name__ == "__main__":
     # ## Example 2 — retry orchestrator with LLM extract + deterministic validate
 
     # %%
-    _ISO_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+    _ISO_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+    _attempt = 0
 
-    @lm(call_lm, system_prompt="Extract a date from the text. Return ONLY ISO-8601.")
-    def extract_date_lm(ctx: SkillContext, call: Any) -> StepResult:
+    def fake_flaky_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
+        """Return invalid output first, then a valid ISO date."""
+        del messages
+        global _attempt  # noqa: PLW0603
+        _attempt += 1
+        return "not-a-date" if _attempt == 1 else "2025-06-01"
+
+    @lm(fake_flaky_model, system_prompt="Extract a date as YYYY-MM-DD.")
+    def extract_date_lm(ctx: SkillContext, call: LMCaller) -> StepResult:
         """Extract a date via LLM."""
         raw = call(messages=[{"role": "user", "content": ctx.entry["text"]}])
-        return StepResult(raw.strip(), {"source": "lm"})
+        return StepResult(value=raw.strip(), meta={"source": "lm"})
 
     def validate_iso(ctx: SkillContext) -> StepResult:
         """Check whether the latest extraction is a valid ISO-8601 date."""
-        prev = ctx.trace.get("ψ::extract")
-        if prev and _ISO_RE.fullmatch(str(prev.value or "")):
-            return StepResult(prev.value, {"valid": True})
-        return StepResult(None, {"valid": False})
+        value = ctx.trace["ψ::extract"].value
+        if _ISO_RE.fullmatch(str(value or "")):
+            return StepResult(value=value, meta={"valid": True})
+        return StepResult(meta={"valid": False})
 
     def retry_extract_verify(ctx: SkillContext, steps: list[Skill]) -> StepResult:
         """Run extract→validate up to 3 times until valid."""
         inner = Skill(name="inner", steps=steps)
+        result = StepResult(meta={"valid": False})
         for attempt in range(1, 4):
-            r = run_skill(inner, ctx.entry)
-            if r.metadata.get("valid"):
+            trace = run_skill(inner, ctx.entry)
+            result = last(trace)
+            if result.meta.get("valid"):
                 return StepResult(
-                    value=r.value,
-                    metadata={"valid": True, "attempts": attempt},
-                    resolved_by=r.resolved_by,
+                    value=result.value,
+                    meta={"valid": True, "attempts": attempt},
                 )
         return StepResult(
-            value=r.value,
-            metadata={"valid": False, "attempts": 3},
-            resolved_by=r.resolved_by,
+            value=result.value,
+            meta={"valid": False, "attempts": 3},
         )
 
     dates_skill = Skill(
@@ -508,9 +639,20 @@ if __name__ == "__main__":
         ],
     )
 
-    print(compile_skill(dates_skill))
+    compiled_dates = compile_skill(dates_skill)
+    print(compiled_dates)
+    assert "# dates" in compiled_dates
+    assert "## ψ::extract" in compiled_dates
+    assert "## λ::validate" in compiled_dates
+    assert "value = extract" in compiled_dates
 
-    result = run_skill(dates_skill, text="Let's meet on the 15th of January 2025")
-    assert _ISO_RE.fullmatch(str(result.value)), f"{result.value=}"
-    assert result.metadata.get("valid") is True  # deterministic validate confirms
-    print("dates result:", result.value, "attempts:", result.metadata.get("attempts"))
+    dates_trace = run_skill(dates_skill, text="Let's meet on the 15th of January 2025")
+    dates_result = last(dates_trace)
+    assert _ISO_RE.fullmatch(str(dates_result.value)), f"{dates_result.value=}"
+    assert dates_result.meta.get("valid") is True
+    print(
+        "dates result:",
+        dates_result.value,
+        "attempts:",
+        dates_result.meta.get("attempts"),
+    )
