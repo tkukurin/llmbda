@@ -46,13 +46,6 @@ CONFIDENCE_UPPER = float(os.environ.get("CRAG_CONF_UPPER", "0.7"))
 CONFIDENCE_LOWER = float(os.environ.get("CRAG_CONF_LOWER", "0.3"))
 
 
-def _call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
-    from litellm import completion  # noqa: PLC0415
-
-    resp = completion(model=MODEL, messages=messages, **kw)
-    return resp.choices[0].message.content
-
-
 _WORD_RE = re.compile(r"\w+")
 
 
