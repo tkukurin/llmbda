@@ -177,9 +177,7 @@ def skill_solver(
                 trace = await arun_skill(patched, extract(state))
                 for msgs, completion in message_log:
                     state.messages.extend(msgs)
-                    state.messages.append(
-                        ChatMessageAssistant(content=completion)
-                    )
+                    state.messages.append(ChatMessageAssistant(content=completion))
             else:
                 trace = run_skill(skill, extract(state))
             final = last(trace)
@@ -295,7 +293,11 @@ class _PassthroughModelAPI(ModelAPI):
         )
 
     async def generate(
-        self, input, tools, tool_choice, config  # noqa: A002, ARG002
+        self,
+        input,
+        tools,
+        tool_choice,
+        config,  # noqa: A002, ARG002
     ):
         name = (
             self.model_name.split("/", 1)[-1]
