@@ -70,8 +70,9 @@ eval_task = Task(
     scorer=[extraction_match, arithmetic_validity, final_match],
 )
 
-print(f"model: {MODEL}, samples: {len(EVAL_SAMPLES)}")
-eval_logs = inspect_eval(eval_task, model="none/none")
+INSPECT_MODEL = os.environ.get("INSPECT_MODEL", "none/none")
+print(f"model: {MODEL}, inspect_model: {INSPECT_MODEL}, samples: {len(EVAL_SAMPLES)}")
+eval_logs = inspect_eval(eval_task, model=INSPECT_MODEL)
 assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"  # noqa: RUF018
 
 # %%

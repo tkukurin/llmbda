@@ -325,3 +325,44 @@ class TestModelRouting:
         assert DEFAULT_TRACE_KEY in out.metadata
         assert "a" in out.metadata[DEFAULT_TRACE_KEY]
         assert out.metadata[DEFAULT_TRACE_KEY]["a"].value == "response"
+
+    def test_async_lm_step_routes_through_model(self):
+        """Native async @lm steps route through Inspect without thread bridge."""
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        async def fake_caller(*, messages, **kw):  # noqa: ARG001
+            return "should not be called"
+
+        @lm(fake_caller, system_prompt="Async helper.")
+        async def my_step(ctx: SkillContext, call) -> StepResult:
+            raw = await call(messages=[{"role": "user", "content": ctx.entry}])
+            return StepResult(value=raw)
+
+        skill = Skill(name="s", steps=[Skill("lm_step", fn=my_step)])
+        model, call_log = self._mock_model(["async model says hi"])
+        out = self._run_with_mock(skill, model, input_text="test input")
+
+        assert out.output.completion == "async model says hi"
+        assert len(call_log) == 1
+        assert call_log[0][0].content == "Async helper."
+        assert call_log[0][1].content == "test input"
+
+    def test_multi_call_within_single_step(self):
+        """A step that calls the model multiple times gets all logged."""
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        def fake(*, messages, **kw):  # noqa: ARG001
+            return "x"
+
+        @lm(fake, system_prompt="Multi.")
+        def multi_call(_ctx: SkillContext, call) -> StepResult:
+            r1 = call(messages=[{"role": "user", "content": "first"}])
+            r2 = call(messages=[{"role": "user", "content": "second"}])
+            return StepResult(value=f"{r1}+{r2}")
+
+        skill = Skill(name="s", steps=[Skill("m", fn=multi_call)])
+        model, call_log = self._mock_model(["A", "B"])
+        out = self._run_with_mock(skill, model)
+
+        assert out.output.completion == "A+B"
+        assert len(call_log) == 2

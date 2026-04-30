@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect as _stdlib_inspect
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
 from importlib.metadata import PackageNotFoundError
@@ -100,6 +101,16 @@ def lm(
         bound = model
 
     def decorator(fn: Callable[..., StepResult]) -> Callable[..., StepResult]:
+        if asyncio.iscoroutinefunction(fn):
+
+            @wraps(fn)
+            async def async_wrapper(ctx: SkillContext, *args: Any) -> StepResult:
+                return await fn(ctx, *args, bound)
+
+            async_wrapper.lm_system_prompt = system_prompt  # type: ignore[attr-defined]
+            async_wrapper.lm_model = model  # type: ignore[attr-defined]
+            return async_wrapper  # type: ignore[return-value]
+
         @wraps(fn)
         def wrapper(ctx: SkillContext, *args: Any) -> StepResult:
             return fn(ctx, *args, bound)
@@ -150,6 +161,29 @@ def _walk(skill: Skill, ctx: SkillContext) -> Iterator[tuple[str, StepResult]]:
             yield from _walk(child, ctx)
 
 
+async def _awalk(
+    skill: Skill, ctx: SkillContext
+) -> AsyncIterator[tuple[str, StepResult]]:
+    """Async DFS walk; awaits coroutine fns, calls sync fns inline."""
+    if skill.fn:
+        if asyncio.iscoroutinefunction(skill.fn):
+            result = (
+                await skill.fn(ctx, skill.steps)
+                if skill.steps
+                else await skill.fn(ctx)
+            )
+        else:
+            result = skill.fn(ctx, skill.steps) if skill.steps else skill.fn(ctx)
+        if not isinstance(result, StepResult):
+            result = StepResult(value=result)
+        ctx.trace[skill.name] = ctx.prev = result
+        yield skill.name, result
+    else:
+        for child in skill.steps:
+            async for pair in _awalk(child, ctx):
+                yield pair
+
+
 def _make_entry(entry: Any, kwargs: dict[str, Any]) -> Any:
     if kwargs and entry is not None:
         msg = "pass either positional entry or kwargs, not both"
@@ -174,6 +208,27 @@ def run_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> Trace:
     return dict(iter_skill(skill, _make_entry(entry, kwargs)))
 
 
+async def aiter_skill(
+    skill: Skill,
+    entry: Any = None,
+    **kwargs: Any,
+) -> AsyncIterator[tuple[str, StepResult]]:
+    """Async yield (name, result) per executed step."""
+    if duplicates := _dup_trace_names(skill):
+        raise ValueError(duplicates)
+    ctx = SkillContext(entry=_make_entry(entry, kwargs))
+    async for pair in _awalk(skill, ctx):
+        yield pair
+
+
+async def arun_skill(skill: Skill, entry: Any = None, **kwargs: Any) -> Trace:
+    """Async run *skill* to completion, return ordered trace dict."""
+    return {
+        name: result
+        async for name, result in aiter_skill(skill, _make_entry(entry, kwargs))
+    }
+
+
 def last(trace: Trace) -> StepResult:
     """Last step's result from a trace."""
     if not trace:
@@ -185,6 +240,16 @@ def fst_match(ctx: SkillContext, steps: list[Skill]) -> StepResult:
     """Orchestrator: return the first child result with a non-None value."""
     for s in steps:
         r = run_skill(Skill(name="_", steps=[s]), ctx.entry)
+        v = last(r)
+        if v.value is not None:
+            return v
+    return StepResult()
+
+
+async def afst_match(ctx: SkillContext, steps: list[Skill]) -> StepResult:
+    """Async orchestrator: return first child result with a non-None value."""
+    for s in steps:
+        r = await arun_skill(Skill(name="_", steps=[s]), ctx.entry)
         v = last(r)
         if v.value is not None:
             return v
@@ -218,6 +283,9 @@ __all__ = [
     "StepResult",
     "Trace",
     "__version__",
+    "afst_match",
+    "aiter_skill",
+    "arun_skill",
     "check_skill",
     "fst_match",
     "iter_skill",
