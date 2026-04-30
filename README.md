@@ -191,15 +191,23 @@ uv run examples/date_extraction.py
 # calendar booking: regex parsers + LLM verifier
 uv run examples/calendar_booking.py
 
+# compile a skill tree into readable skill.md (no external deps)
+uv run examples/compile_sketch.py
+
+# compare run_skill with compiled skill + live tool use
+COMPILE_VS_RUN_MODEL=gpt-4o-mini uv run examples/compile_vs_run.py
+
 # support triage: extraction, classification, validation loop
 uv run examples/triage/main.py
 
 # same skill, scored step-by-step with Inspect AI (see section below)
 uv run examples/triage/scoring.py
 
-# all 20 use cases in one file (no external deps)
+# common use cases in one file (no external deps)
 uv run examples/showcase.py
 ```
+
+- `examples/compile_vs_run.py` needs `COMPILE_VS_RUN_MODEL` plus the matching provider API key expected by `litellm`.
 
 ## Inspect AI integration
 
