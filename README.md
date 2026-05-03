@@ -229,6 +229,7 @@ uv run examples/showcase.py
 
 - Score individual skill steps with [Inspect AI](https://inspect.aisi.org.uk/) scorers.
 - `skill_solver(skill)` wraps a skill as an Inspect `Solver`.
+- When the Inspect model isn't `none/none`, `@lm` steps are rebound to call Inspect's model via `arun_skill`.
 - `step_scorer(name, inner)` scores a named step value instead of the final completion.
 - `step_check(name, predicate)` scores a named `StepResult`.
 - `passthrough_model(fn, name=...)` registers scripted or offline callers as Inspect models.

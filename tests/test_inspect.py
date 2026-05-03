@@ -347,6 +347,7 @@ class TestModelRouting:
         assert out.metadata[DEFAULT_TRACE_KEY]["a"].value == "response"
 
     def test_async_lm_step_routes_through_model(self):
+        """Native async @lm steps route through Inspect without thread bridge."""
         from tk.llmbda import lm  # noqa: PLC0415
 
         async def fake_caller(*, messages, **kw):  # noqa: ARG001
@@ -367,6 +368,7 @@ class TestModelRouting:
         assert call_log[0][1].content == "test input"
 
     def test_multi_call_within_single_step(self):
+        """A step that calls the model multiple times gets all logged."""
         from tk.llmbda import lm  # noqa: PLC0415
 
         def fake(*, messages, **kw):  # noqa: ARG001
