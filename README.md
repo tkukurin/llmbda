@@ -173,6 +173,30 @@ for name, result in iter_skill(skill, {"x": 1}):
         break
 ```
 
+## Async API
+
+`arun_skill`, `aiter_skill`, and `afst_match` are async equivalents.
+They handle both sync and async step fns — async fns are awaited, sync
+fns are called inline.
+
+```python
+from tk.llmbda import Skill, SkillContext, StepResult, arun_skill, lm
+
+async def my_model(*, messages, **kw):
+    ...  # any async model client
+
+@lm(my_model, system_prompt="Extract a date.")
+async def extract(ctx: SkillContext, call) -> StepResult:
+    raw = await call(messages=[{"role": "user", "content": ctx.entry}])
+    return StepResult(value=raw.strip())
+
+skill = Skill(name="s", steps=[Skill("extract", fn=extract)])
+trace = await arun_skill(skill, "meet on Jan 15 2025")
+```
+
+- `@lm` detects `async def` and produces an async wrapper automatically.
+- `arun_skill` works with mixed sync/async steps in the same pipeline.
+
 ## Test re-binding
 
 ```python
@@ -204,8 +228,13 @@ uv run examples/showcase.py
 ## Inspect AI integration
 
 Score individual steps of a skill with [Inspect AI](https://inspect.aisi.org.uk/) scorers.
+Model calls route through Inspect's model and appear as `ModelEvent` entries
+in the per-sample transcript — full request/response pairs, token counts.
 
-- `skill_solver(skill)` wraps a skill as an Inspect `Solver`. Final value becomes the completion; full trace lands in `state.metadata["llmbda.trace"]`.
+- `skill_solver(skill)` wraps a skill as an Inspect `Solver`. When the
+  Inspect model isn't `none/none`, @lm steps are rebound to call Inspect's
+  model via `arun_skill` (async walker). Sync user fns work unchanged via
+  a context-propagating thread bridge.
 - `step_scorer(name, inner)` adapts any Inspect scorer to read a named step's value instead of the final completion.
 - `step_check(name, predicate)` scores a step by applying a predicate to its `StepResult`.
 
