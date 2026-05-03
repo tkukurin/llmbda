@@ -198,10 +198,9 @@ def test_step_check_missing_step_raises():
 
 
 class TestModelRouting:
-    """Tests verifying @lm calls route through Inspect's model."""
+    """Verify that `@lm` calls route through Inspect's model."""
 
     def _mock_model(self, responses: list[str]):
-        """Create a mock Model that returns canned responses."""
         from unittest.mock import AsyncMock  # noqa: PLC0415
 
         from inspect_ai.model import ModelOutput  # noqa: PLC0415
@@ -267,6 +266,27 @@ class TestModelRouting:
 
         assert out.output.completion == "2025-01-01"
         assert call_log[0][0].content == "Extract dates."
+
+    def test_lm_step_appends_messages(self):
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        def fake(*, messages, **kw):  # noqa: ARG001
+            return "unused"
+
+        @lm(fake, system_prompt="You are helpful.")
+        def my_step(ctx: SkillContext, call) -> StepResult:
+            raw = call(messages=[{"role": "user", "content": ctx.entry}])
+            return StepResult(value=raw)
+
+        skill = Skill(name="s", steps=[Skill("lm_step", fn=my_step)])
+        model, _ = self._mock_model(["model says hi"])
+        out = self._run_with_mock(skill, model, input_text="test input")
+
+        assert [m.content for m in out.messages] == [
+            "You are helpful.",
+            "test input",
+            "model says hi",
+        ]
 
     def test_non_lm_steps_unaffected_by_rebind(self):
         def pure_step(ctx: SkillContext) -> StepResult:

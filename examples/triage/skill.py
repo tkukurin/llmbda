@@ -1,7 +1,4 @@
-"""Support triage skill: deterministic extraction, scripted LLM steps, repair loop.
-
-Plain module (not a notebook). Imported by `main.py` and `scoring.py`.
-"""
+"""Support triage skill with scripted LLM steps and a repair loop."""
 
 from __future__ import annotations
 
@@ -382,5 +379,6 @@ __all__ = [
     "TICKETS",
     "URGENCY",
     "run_skill",
+    "scripted_support_model",
     "support_triage",
 ]

@@ -1,11 +1,4 @@
-"""Inspect AI adapters for `tk.llmbda` skills.
-
-Routes @lm calls through Inspect's model with full transcript logging.
-Model calls run within the solver's async context via context-propagating bridge,
-so each request/response pair appears in Inspect's event timeline.
-
-Requires the `inspect` extra: `pip install tk-llmbda[inspect]`.
-"""
+"""Adapters for running `tk.llmbda` skills inside Inspect AI."""
 
 from __future__ import annotations
 
@@ -20,7 +13,10 @@ from inspect_ai.model import (
     ChatMessageAssistant,
     ChatMessageSystem,
     ChatMessageUser,
+    GenerateConfig,
+    ModelAPI,
     ModelOutput,
+    modelapi,
 )
 from inspect_ai.scorer import Score, accuracy, mean, scorer, stderr
 from inspect_ai.solver import solver
@@ -55,25 +51,24 @@ def _to_chat_messages(messages: list[dict[str, str]]) -> list:
     ]
 
 
-def _make_async_caller(model_name: str) -> Callable[..., Any]:
-    """Create an async LMCaller that routes through Inspect's model."""
+def _make_async_caller(model_name: str) -> tuple[Callable[..., Any], list]:
+    """Create an async caller and capture request/response pairs."""
     _cache: list = []
+    message_log: list[tuple[list, str]] = []
 
     async def async_caller(*, messages: list[dict[str, str]], **_kw: Any) -> str:
         if not _cache:
             _cache.append(_get_model(model_name))
-        result = await _cache[0].generate(_to_chat_messages(messages))
+        chat_msgs = _to_chat_messages(messages)
+        result = await _cache[0].generate(chat_msgs)
+        message_log.append((chat_msgs, result.completion))
         return result.completion
 
-    return async_caller
+    return async_caller, message_log
 
 
 def _rebind_skill_async(skill: Skill, async_caller: Callable[..., Any]) -> Skill:
-    """Deep-copy skill tree, replacing @lm-bound callers with async versions.
-
-    Creates async wrappers that directly await the model — no thread bridge needed.
-    Works with both sync and async user fns via a sync-to-async shim.
-    """
+    """Copy a skill tree and rebind `@lm` steps to an async caller."""
     if skill.fn and hasattr(skill.fn, "lm_system_prompt"):
         sys_prompt = skill.fn.lm_system_prompt
         original = skill.fn.__wrapped__
@@ -97,9 +92,6 @@ def _rebind_skill_async(skill: Skill, async_caller: Callable[..., Any]) -> Skill
 
             @wraps(original)
             async def new_fn(ctx, *args):
-                # Sync user fn expects sync `call` — run it in a thread with
-                # a context-propagating bridge so model calls stay in Inspect's
-                # transcript context.
                 loop = asyncio.get_running_loop()
                 parent_ctx = contextvars.copy_context()
 
@@ -125,11 +117,7 @@ def _await_in_context(
     coro: Any,
     context: contextvars.Context,
 ) -> Any:
-    """Schedule *coro* on *loop* with *context*, block calling thread.
-
-    - `run_coroutine_threadsafe` drops contextvars; Inspect can't log model calls.
-    - `create_task(coro, context=ctx)` (3.11+) keeps them; ModelEvent in transcript.
-    """
+    """Run `coro` on `loop` inside `context` and block the caller thread."""
     future: concurrent.futures.Future = concurrent.futures.Future()
 
     async def _run():
@@ -159,12 +147,15 @@ def skill_solver(
     def _factory():
         async def solve(state, _generate):
             model_name = str(state.model)
-            use_inspect_model = "none" not in model_name
+            use_inspect_model = model_name != "none/none"
 
             if use_inspect_model:
-                async_caller = _make_async_caller(model_name)
+                async_caller, message_log = _make_async_caller(model_name)
                 patched = _rebind_skill_async(skill, async_caller)
                 trace = await arun_skill(patched, extract(state))
+                for msgs, completion in message_log:
+                    state.messages.extend(msgs)
+                    state.messages.append(ChatMessageAssistant(content=completion))
             else:
                 trace = run_skill(skill, extract(state))
             final = last(trace)
@@ -253,4 +244,69 @@ def _inherit_metrics(inner: Scorer) -> list | None:
         return None
 
 
-__all__ = ["DEFAULT_TRACE_KEY", "skill_solver", "step_check", "step_scorer"]
+_PASSTHROUGH_REGISTRY: dict[str, Any] = {}
+
+
+_DEFAULT_CONFIG = GenerateConfig()
+
+
+@modelapi(name="llmbda")
+class _PassthroughModelAPI(ModelAPI):
+    """Inspect `ModelAPI` that delegates to a registered caller."""
+
+    def __init__(
+        self,
+        model_name: str = "llmbda/default",
+        base_url: str | None = None,
+        api_key: str | None = None,
+        api_key_vars: list[str] | None = None,
+        config: GenerateConfig = _DEFAULT_CONFIG,
+    ) -> None:
+        super().__init__(
+            model_name=model_name,
+            base_url=base_url,
+            api_key=api_key,
+            api_key_vars=api_key_vars or [],
+            config=config,
+        )
+
+    async def generate(
+        self,
+        input,  # noqa: A002
+        tools,  # noqa: ARG002
+        tool_choice,  # noqa: ARG002
+        config,  # noqa: ARG002
+    ):
+        name = (
+            self.model_name.split("/", 1)[-1]
+            if "/" in self.model_name
+            else self.model_name
+        )
+        fn = _PASSTHROUGH_REGISTRY[name]
+        messages = []
+        for m in input:
+            if isinstance(m, ChatMessageSystem):
+                messages.append({"role": "system", "content": m.content})
+            elif isinstance(m, ChatMessageUser):
+                messages.append({"role": "user", "content": m.content})
+            else:
+                messages.append({"role": "assistant", "content": m.content})
+        result = fn(messages=messages)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return ModelOutput.from_content(model=self.model_name, content=result)
+
+
+def passthrough_model(fn: Any, name: str = "default") -> str:
+    """Register a callable as an Inspect model and return its model name."""
+    _PASSTHROUGH_REGISTRY[name] = fn
+    return f"llmbda/{name}"
+
+
+__all__ = [
+    "DEFAULT_TRACE_KEY",
+    "passthrough_model",
+    "skill_solver",
+    "step_check",
+    "step_scorer",
+]

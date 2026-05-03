@@ -8,10 +8,7 @@
 # [tool.uv.sources]
 # tk-llmbda = { path = "../../", editable = true }
 # ///
-"""GSM8K solver skill: CoT reasoning, extraction, verification, repair.
-
-Plain module imported by `scoring.py`.
-"""
+"""GSM8K solver skill with reasoning, verification, and repair."""
 
 from __future__ import annotations
 
@@ -158,6 +155,7 @@ __all__ = [
     "REASON",
     "REPAIR",
     "VERIFY",
+    "call_lm",
     "gsm8k_solver",
     "run_skill",
 ]
