@@ -99,7 +99,8 @@ def evaluate(ctx: SkillContext, call: LMCaller) -> StepResult:
     raw = call(messages=[{"role": "user", "content": payload}])
     evaluations = json.loads(strip_fences(raw))
     relevant_docs = [
-        doc for doc, ev in zip(entry["documents"], evaluations, strict=False)
+        doc
+        for doc, ev in zip(entry["documents"], evaluations, strict=False)
         if ev.get("relevant", False)
     ]
     return StepResult(

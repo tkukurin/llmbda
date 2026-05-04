@@ -71,8 +71,7 @@ def _retrieve_topk(
     """TF-IDF ranking of paragraphs, returns top-k as documents."""
     q_tokens = [w.lower() for w in _WORD_RE.findall(question)]
     corpus_tokens = [
-        [w.lower() for w in _WORD_RE.findall(p["text"])]
-        for p in paragraphs
+        [w.lower() for w in _WORD_RE.findall(p["text"])] for p in paragraphs
     ]
     n = len(corpus_tokens) or 1
     df: Counter[str] = Counter()

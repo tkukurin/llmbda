@@ -79,4 +79,12 @@ gsm8k = Skill(
     ],
 )
 
-__all__ = ["MODEL", "REASON", "VERIFY", "call_lm", "gsm8k", "run_skill", "scripted_gsm8k_model"]
+__all__ = [
+    "MODEL",
+    "REASON",
+    "VERIFY",
+    "call_lm",
+    "gsm8k",
+    "run_skill",
+    "scripted_gsm8k_model",
+]
