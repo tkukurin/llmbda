@@ -11,14 +11,16 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 # %%
-"""Inspect scoring for the CRAG solver skill.
+"""Inspect scoring for the CRAG skill.
 
 - Run: `uv run examples/crag/scoring.py`
 - LLM: `CRAG_MODEL=openai/gpt-4o-mini CRAG_LIMIT=50 uv run examples/crag/scoring.py`
 - View: `uv run inspect view`
 """
 
+import math
 import os
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -26,22 +28,14 @@ from inspect_ai import Task
 from inspect_ai import eval as inspect_eval
 from inspect_ai.dataset import Sample, hf_dataset
 from inspect_ai.log import EvalLog
-from inspect_ai.scorer import (
-    Score,
-    Target,
-    accuracy,
-    mean,
-    scorer,
-    stderr,
-)
+from inspect_ai.scorer import Score, Target, accuracy, mean, scorer, stderr
 from inspect_ai.solver import TaskState
-from skill import (
-    ACTION,
+from skill import (  # noqa: F401
     EVALUATE,
     GENERATE,
     MODEL,
-    RETRIEVE,
-    crag_solver,
+    call_lm,
+    crag,
     scripted_crag_model,
 )
 
@@ -53,20 +47,60 @@ INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _SCRIPTED)
 
 # %%
 _LIMIT = int(os.environ.get("CRAG_LIMIT", "0")) or None
+_TOP_K = int(os.environ.get("CRAG_TOP_K", "5"))
+_WORD_RE = re.compile(r"\w+")
+
+
+def _build_paragraphs(record: dict) -> list[dict]:
+    """Extract title+text+sentences from a HotpotQA record."""
+    titles = record["context"]["title"]
+    sentences_list = record["context"]["sentences"]
+    return [
+        {
+            "title": t,
+            "text": " ".join(s.strip() for s in sents),
+            "sentences": list(sents),
+        }
+        for t, sents in zip(titles, sentences_list, strict=False)
+    ]
+
+
+def _retrieve_topk(
+    question: str, paragraphs: list[dict], k: int = _TOP_K
+) -> list[dict]:
+    """TF-IDF ranking of paragraphs, returns top-k as documents."""
+    q_tokens = [w.lower() for w in _WORD_RE.findall(question)]
+    corpus_tokens = [
+        [w.lower() for w in _WORD_RE.findall(p["text"])] for p in paragraphs
+    ]
+    n = len(corpus_tokens) or 1
+    df: Counter[str] = Counter()
+    for doc_toks in corpus_tokens:
+        df.update(set(doc_toks))
+    idf = {t: math.log((n + 1) / (d + 1)) + 1 for t, d in df.items()}
+    scores = []
+    for i, doc_toks in enumerate(corpus_tokens):
+        tf = Counter(doc_toks)
+        total = len(doc_toks) or 1
+        score = sum((tf[t] / total) * idf.get(t, 0.0) for t in set(q_tokens))
+        scores.append((i, score))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [paragraphs[i] for i, _ in scores[:k]]
 
 
 def _record_to_sample(record: dict) -> Sample:
-    """Convert a HotpotQA record into an Inspect Sample."""
-    gold_titles = set(record["supporting_facts"]["title"])
+    """Build Sample with pre-retrieved documents in metadata."""
+    question = record["question"].strip()
+    paragraphs = _build_paragraphs(record)
+    documents = _retrieve_topk(question, paragraphs)
     return Sample(
         id=record["id"],
-        input=record["question"],
+        input=question,
         target=record["answer"],
         metadata={
-            "record": record,
-            "gold_titles": list(gold_titles),
-            "type": record["type"],
-            "level": record["level"],
+            "question": question,
+            "documents": documents,
+            "gold_titles": list(set(record["supporting_facts"]["title"])),
         },
     )
 
@@ -79,14 +113,11 @@ EVAL_SAMPLES = hf_dataset(
     limit=_LIMIT,
 )
 
-
 # %%
 
 
 def _normalize(text: str) -> list[str]:
     """Lowercase, strip articles/punctuation, tokenize."""
-    import re  # noqa: PLC0415
-
     text = text.lower()
     text = re.sub(r"\b(a|an|the)\b", " ", text)
     text = re.sub(r"[^\w\s]", "", text)
@@ -114,18 +145,10 @@ def answer_f1():
     async def score(state: TaskState, target: Target) -> Score:
         trace = (state.metadata or {}).get("llmbda.trace", {})
         answer = trace[GENERATE].value["answer"] if GENERATE in trace else ""
-        gold = target.text
-        f1 = _token_f1(answer, gold)
-        return Score(
-            value=f1,
-            answer=answer,
-            explanation=f"F1={f1:.3f} (pred={answer!r}, gold={gold!r})",
-        )
+        f1 = _token_f1(answer, target.text)
+        return Score(value=f1, answer=answer, explanation=f"F1={f1:.3f}")
 
     return score
-
-
-# %%
 
 
 @scorer(metrics=[accuracy(), stderr()])
@@ -138,95 +161,23 @@ def answer_em():
         pred_norm = " ".join(_normalize(answer))
         gold_norm = " ".join(_normalize(target.text))
         match = pred_norm == gold_norm
-        return Score(
-            value="C" if match else "I",
-            answer=answer,
-            explanation=f"pred={pred_norm!r}, gold={gold_norm!r}",
-        )
+        return Score(value="C" if match else "I", answer=answer)
 
     return score
 
 
 # %%
-
-
-@scorer(metrics=[mean(), stderr()])
-def retrieval_eval_quality():
-    """Did the evaluator correctly identify gold supporting paragraphs?"""
-
-    async def score(state: TaskState, target: Target) -> Score:  # noqa: ARG001
-        trace = (state.metadata or {}).get("llmbda.trace", {})
-        gold_titles = set(state.metadata.get("gold_titles", []))
-        if EVALUATE not in trace or not gold_titles:
-            return Score(value=0.0, explanation="missing trace or gold_titles")
-        evaluations = trace[EVALUATE].value["evaluations"]
-        kept = {
-            e["title"] for e in evaluations if e["label"] in ("correct", "ambiguous")
-        }
-        retrieved_titles = {e["title"] for e in evaluations}
-        gold_in_retrieved = gold_titles & retrieved_titles
-        if not gold_in_retrieved:
-            return Score(value=0.0, explanation="no gold docs in top-k")
-        recalled = gold_in_retrieved & kept
-        recall = len(recalled) / len(gold_in_retrieved)
-        return Score(
-            value=recall,
-            answer=str(sorted(kept)),
-            explanation=(
-                f"recall={recall:.2f}"
-                f" ({len(recalled)}/{len(gold_in_retrieved)} gold docs kept)"
-            ),
-        )
-
-    return score
-
-
-# %%
-
-
-@scorer(metrics=[mean(), stderr()])
-def action_correctness():
-    """Was the action reasonable given gold doc presence in retrieved set?"""
-
-    async def score(state: TaskState, target: Target) -> Score:  # noqa: ARG001
-        trace = (state.metadata or {}).get("llmbda.trace", {})
-        gold_titles = set(state.metadata.get("gold_titles", []))
-        if ACTION not in trace or RETRIEVE not in trace:
-            return Score(value=0.0, explanation="missing trace")
-        action = trace[ACTION].value["action"]
-        retrieved_titles = {d["title"] for d in trace[RETRIEVE].value["documents"]}
-        gold_in_retrieved = gold_titles & retrieved_titles
-        has_gold = len(gold_in_retrieved) > 0
-        if has_gold and action in ("correct", "ambiguous"):
-            val = 1.0
-            reason = f"gold present, action={action} (good)"
-        elif not has_gold and action == "incorrect":
-            val = 1.0
-            reason = "no gold in top-k, action=incorrect (good)"
-        elif has_gold and action == "incorrect":
-            val = 0.0
-            reason = "gold present but discarded (bad)"
-        else:
-            val = 0.5
-            reason = f"no gold in top-k, action={action} (acceptable)"
-        return Score(value=val, answer=action, explanation=reason)
-
-    return score
-
-
-# %%
-
-
 eval_task = Task(
-    name="crag_hotpotqa_eval",
+    name="crag_hotpotqa",
     dataset=EVAL_SAMPLES,
-    solver=skill_solver(crag_solver, entry=lambda s: s.metadata["record"]),
-    scorer=[
-        retrieval_eval_quality(),
-        action_correctness(),
-        answer_f1(),
-        answer_em(),
-    ],
+    solver=skill_solver(
+        crag,
+        entry=lambda s: {
+            "question": s.metadata["question"],
+            "documents": s.metadata["documents"],
+        },
+    ),
+    scorer=[answer_f1(), answer_em()],
 )
 
 print(f"model: {MODEL}, inspect_model: {INSPECT_MODEL}, samples: {len(EVAL_SAMPLES)}")

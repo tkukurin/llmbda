@@ -8,154 +8,83 @@
 # [tool.uv.sources]
 # tk-llmbda = { path = "../../", editable = true }
 # ///
-"""GSM8K solver skill with reasoning, verification, and repair."""
+"""GSM8K solver: chain-of-thought reasoning with self-verification."""
 
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
 from litellm import completion
 
 from tk.llmbda import LMCaller, Skill, SkillContext, StepResult, lm, run_skill
 
-PARSE = "λ::parse"
-REASON = "ψ::reason"
-EXTRACT = "λ::extract"
-VERIFY = "λ::verify"
-REPAIR = "ψ::repair"
+REASON = "reason"
+VERIFY = "verify"
 
 MODEL = os.environ.get("GSM8K_MODEL", "openai/gpt-4o-mini")
 
-_ANSWER_RE = re.compile(r"####\s*([^\n]+)")
-_CALC_RE = re.compile(r"<<([^>]+)=([^>]+)>>")
-_NUMBER_RE = re.compile(r"-?[\d,]+\.?\d*")
-
 
 def call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
+    """LiteLLM completion caller."""
     resp = completion(model=MODEL, messages=messages, **kw)
     return resp.choices[0].message.content
 
 
-def parse_problem(ctx: SkillContext) -> StepResult:
-    """Normalize the input question into a clean string."""
-    q = ctx.entry if isinstance(ctx.entry, str) else ctx.entry["question"]
-    return StepResult(value={"question": q.strip()})
+def scripted_gsm8k_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
+    """Canned model for zero-dep demo runs."""
+    text = messages[-1]["content"] if messages else ""
+    if "verify" in text.lower() or "check" in text.lower():
+        return "The solution is correct. The final answer is #### 42"
+    return (
+        "Step 1: We start with 20 apples.\n"
+        "Step 2: We give away 5, leaving 20 - 5 = 15.\n"
+        "Step 3: We buy 27 more, giving 15 + 27 = 42.\n"
+        "#### 42"
+    )
 
 
-REASON_PROMPT = """\
-You are a math tutor. Solve the problem step by step.
-Use <<expression=result>> for each calculation.
-End with #### followed by the final numeric answer on its own line."""
+REASON_PROMPT = (
+    "Solve the math problem step by step. Show your work clearly. "
+    "End your response with #### followed by the final numeric answer."
+)
 
 
 @lm(call_lm, system_prompt=REASON_PROMPT)
 def reason(ctx: SkillContext, call: LMCaller) -> StepResult:
-    """Generate chain-of-thought reasoning via LLM."""
-    question = ctx.trace[PARSE].value["question"]
-    raw = call(messages=[{"role": "user", "content": question}])
-    return StepResult(value={"reasoning": raw.strip()})
+    """Chain-of-thought reasoning on the problem."""
+    return StepResult(value=call(messages=[{"role": "user", "content": ctx.entry}]))
 
 
-def extract_answer(ctx: SkillContext) -> StepResult:
-    """Pull the final numeric answer from the CoT reasoning."""
-    reasoning = ctx.trace[REASON].value["reasoning"]
-    m = _ANSWER_RE.search(reasoning)
-    if m:
-        answer = m.group(1).strip().replace(",", "").replace("$", "")
-    else:
-        numbers = _NUMBER_RE.findall(reasoning)
-        answer = numbers[-1].replace(",", "") if numbers else ""
-    return StepResult(
-        value={"answer": answer, "reasoning": reasoning},
-        meta={"extracted_from": "####" if m else "fallback"},
-    )
+VERIFY_PROMPT = (
+    "You are verifying a math solution. Check each arithmetic step. "
+    "If correct, restate the final answer. If wrong, redo the calculation. "
+    "End your response with #### followed by the final numeric answer."
+)
 
 
-def verify_arithmetic(ctx: SkillContext) -> StepResult:
-    """Re-evaluate <<expr=result>> annotations; flag mismatches."""
-    reasoning = ctx.trace[REASON].value["reasoning"]
-    errors: list[str] = []
-    for expr, claimed in _CALC_RE.findall(reasoning):
-        claimed_clean = claimed.strip().replace(",", "")
-        try:
-            actual = _safe_eval(expr)
-            if actual is not None and abs(actual - _parse_number(claimed_clean)) > 0.01:
-                errors.append(f"{expr} = {claimed_clean} (expected {actual})")
-        except (ValueError, ZeroDivisionError):
-            pass
-    prev = ctx.trace[EXTRACT].value
-    return StepResult(
-        value={"answer": prev["answer"], "reasoning": reasoning},
-        meta={"valid": len(errors) == 0, "errors": errors},
-    )
+@lm(call_lm, system_prompt=VERIFY_PROMPT)
+def verify(ctx: SkillContext, call: LMCaller) -> StepResult:
+    """Self-check: ask the model to verify its own reasoning."""
+    reasoning = ctx.trace[REASON].value
+    prompt = f"Problem: {ctx.entry}\n\nSolution to verify:\n{reasoning}"
+    return StepResult(value=call(messages=[{"role": "user", "content": prompt}]))
 
 
-def _safe_eval(expr: str) -> float | None:
-    expr = expr.replace(",", "").strip()
-    try:
-        return float(eval(expr, {"__builtins__": {}}, {}))  # noqa: S307
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _parse_number(s: str) -> float:
-    return float(s.replace(",", "").replace("$", ""))
-
-
-REPAIR_PROMPT = """\
-You are a math tutor. The previous solution had arithmetic errors.
-Fix ONLY the errors listed below, keep the same structure.
-Use <<expression=result>> for each calculation.
-End with #### followed by the corrected final numeric answer."""
-
-
-@lm(call_lm, system_prompt=REPAIR_PROMPT)
-def repair(ctx: SkillContext, call: LMCaller) -> StepResult:
-    """Re-prompt LLM to fix arithmetic errors found by verify step."""
-    prev = ctx.prev
-    if prev.meta.get("valid", True):
-        return StepResult(value=prev.value, meta={**prev.meta, "repaired": False})
-    question = ctx.trace[PARSE].value["question"]
-    errors = prev.meta["errors"]
-    prompt = (
-        f"Question: {question}\n\n"
-        f"Previous reasoning:\n{prev.value['reasoning']}\n\n"
-        f"Errors found:\n" + "\n".join(f"- {e}" for e in errors)
-    )
-    raw = call(messages=[{"role": "user", "content": prompt}])
-    m = _ANSWER_RE.search(raw)
-    answer = (
-        m.group(1).strip().replace(",", "").replace("$", "")
-        if m
-        else prev.value["answer"]
-    )
-    return StepResult(
-        value={"answer": answer, "reasoning": raw.strip()},
-        meta={"repaired": True, "original_errors": errors},
-    )
-
-
-gsm8k_solver = Skill(
-    name="gsm8k_solver",
+gsm8k = Skill(
+    name="gsm8k",
     steps=[
-        Skill(PARSE, fn=parse_problem),
         Skill(REASON, fn=reason),
-        Skill(EXTRACT, fn=extract_answer),
-        Skill(VERIFY, fn=verify_arithmetic),
-        Skill(REPAIR, fn=repair),
+        Skill(VERIFY, fn=verify),
     ],
 )
 
 __all__ = [
-    "EXTRACT",
     "MODEL",
-    "PARSE",
     "REASON",
-    "REPAIR",
     "VERIFY",
     "call_lm",
-    "gsm8k_solver",
+    "gsm8k",
     "run_skill",
+    "scripted_gsm8k_model",
 ]
