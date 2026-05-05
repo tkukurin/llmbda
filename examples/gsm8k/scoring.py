@@ -13,11 +13,10 @@
 # %%
 """Inspect evaluation for the GSM8K solver skill.
 
-- Run: `GSM8K_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
-- Limit: `GSM8K_LIMIT=50 uv run examples/gsm8k/scoring.py`
-- View: `uv run inspect view`
+- Run: `uv run examples/__main__.py gsm8k --score`
+- Limit: `uv run examples/__main__.py gsm8k --score --limit 50`
+- Standalone: `uv run examples/gsm8k/scoring.py`
 """
-
 from __future__ import annotations
 
 import os
@@ -28,15 +27,11 @@ from inspect_ai import eval as inspect_eval
 from inspect_ai.dataset import Sample, hf_dataset
 from inspect_ai.log import EvalLog
 from inspect_ai.scorer import match
-from skill import make_skill
 
 from tk.llmbda.inspect import skill_solver
 
-_LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
-MODEL = os.environ.get("LLMBDA_MODEL", "openai/gpt-4o-mini")
-INSPECT_MODEL = os.environ.get("INSPECT_MODEL", MODEL)
+from .skill import make_skill
 
-# %%
 _ANSWER_DELIM = "####"
 
 
@@ -46,38 +41,46 @@ def _record_to_sample(record: dict) -> Sample:
     return Sample(input=record["question"], target=target)
 
 
-EVAL_SAMPLES = hf_dataset(
-    path="openai/gsm8k",
-    data_dir="main",
-    split="test",
-    sample_fields=_record_to_sample,
-    limit=int(os.environ.get("GSM8K_LIMIT", "0")) or None,
-)
+def build_task(model: str, limit: int | None = None) -> Task:
+    """Build Inspect evaluation task for GSM8K."""
+    samples = hf_dataset(
+        path="openai/gsm8k",
+        data_dir="main",
+        split="test",
+        sample_fields=_record_to_sample,
+        limit=limit,
+    )
+    return Task(
+        name="gsm8k",
+        dataset=samples,
+        solver=skill_solver(make_skill(model), entry=lambda s: s.input_text),
+        scorer=match(numeric=True),
+    )
+
 
 # %%
-eval_task = Task(
-    name="gsm8k",
-    dataset=EVAL_SAMPLES,
-    solver=skill_solver(make_skill(MODEL), entry=lambda s: s.input_text),
-    scorer=match(numeric=True),
-)
+if __name__ == "__main__":
+    _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
+    _MODEL = os.environ.get("LLMBDA_MODEL", "openai/gpt-4o-mini")
+    _INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _MODEL)
+    _LIMIT = int(os.environ.get("GSM8K_LIMIT", "0")) or None
 
-# %%
-print(f"model: {MODEL}, inspect_model: {INSPECT_MODEL}, samples: {len(EVAL_SAMPLES)}")
-eval_logs = inspect_eval(eval_task, model=INSPECT_MODEL, log_dir=_LOG_DIR)
-assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"  # noqa: RUF018
+    eval_task = build_task(_MODEL, limit=_LIMIT)
+    n = len(eval_task.dataset)
+    print(f"model: {_MODEL}, inspect_model: {_INSPECT_MODEL}, samples: {n}")
+    eval_logs = inspect_eval(eval_task, model=_INSPECT_MODEL, log_dir=_LOG_DIR)
+    assert isinstance((log := eval_logs[0]), EvalLog)
 
-# %%
-print(f"\nstatus: {log.status}")
-if log.status != "success":
-    if log.error:
-        print(f"error: {log.error.message}")
-        if log.error.traceback:
-            print(log.error.traceback)
-    raise SystemExit(1)
+    print(f"\nstatus: {log.status}")
+    if log.status != "success":
+        if log.error:
+            print(f"error: {log.error.message}")
+            if log.error.traceback:
+                print(log.error.traceback)
+        raise SystemExit(1)
 
-assert log.results is not None
-for sr in log.results.scores:
-    print(f"\n{sr.name}")
-    for name, mr in sr.metrics.items():
-        print(f"  {name:16s} = {mr.value:.3f}")
+    assert log.results is not None
+    for sr in log.results.scores:
+        print(f"\n{sr.name}")
+        for name, mr in sr.metrics.items():
+            print(f"  {name:16s} = {mr.value:.3f}")

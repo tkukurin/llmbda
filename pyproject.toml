@@ -89,11 +89,13 @@ ignore = [
   "ERA001",  # commented-out code is often an optional snippet
   "FIX002",  # TODOs in examples are dev notes, not tracked work
   "INP001",  # examples/ is not a package
+  "PLC0415", # deferred imports are intentional in the runner
   "PLR2004", # magic numbers are fine in illustrative examples
+  "RUF009",  # sp.field() calls in dataclass defaults
+  "RUF018",  # walrus in assert is fine for scripts
   "TC001",   # TYPE_CHECKING blocks hurt readability in notebooks
   "TC002",
   "TC003",
   "TD002",   # TODOs in examples don't need author attribution
   "TD003",   # or an issue link
-  "RUF009",  # dataclass field defaults (simple_parsing requires sp.field())
 ]

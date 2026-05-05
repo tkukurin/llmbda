@@ -208,10 +208,10 @@ testable = lm(fake_model)(extract_date.__wrapped__)
 
 ## Examples
 
-All experiment examples are runnable from a single entrypoint:
+All experiments run from a single entrypoint:
 
 ```bash
-# run an experiment (model defaults to LLMBDA_MODEL or openai/gpt-4o-mini)
+# quick demo (runs skill on a sample input)
 uv run examples/__main__.py crag
 uv run examples/__main__.py gsm8k
 uv run examples/__main__.py triage
@@ -219,6 +219,11 @@ uv run examples/__main__.py triage
 # override model
 uv run examples/__main__.py crag --model openai/gpt-4o
 LLMBDA_MODEL=anthropic/claude-sonnet-4-20250514 uv run examples/__main__.py gsm8k
+
+# full Inspect AI evaluation
+uv run examples/__main__.py gsm8k --score --limit 50
+uv run examples/__main__.py crag --score
+INSPECT_MODEL=none/none uv run examples/__main__.py triage --score
 ```
 
 Standalone examples (no API key needed):
@@ -227,14 +232,6 @@ Standalone examples (no API key needed):
 uv run examples/calendar_booking.py
 uv run examples/showcase.py
 uv run examples/date_extraction.py  # needs LITELLM-compatible API key
-```
-
-Inspect AI scoring (see section below):
-
-```bash
-uv run examples/triage/scoring.py
-uv run examples/crag/scoring.py
-uv run examples/gsm8k/scoring.py
 ```
 
 ## Inspect AI integration
@@ -274,14 +271,11 @@ inspect_eval(eval_task, model="openai/gpt-4o-mini", log_dir="logs")
 
 ### Install and run
 
-- Library use: `pip install tk-llmbda[inspect]`
-- Repo setup: `uv sync`
-- Run experiments: `uv run examples/__main__.py <experiment> [--model <model>]`
-- Scoring:
-  - `uv run examples/triage/scoring.py`
-  - `LLMBDA_MODEL=openai/gpt-4o-mini uv run examples/crag/scoring.py`
-  - `LLMBDA_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
-  - `uv run inspect view`
+- Library: `pip install tk-llmbda[inspect]`
+- Repo: `uv sync`
+- Demo: `uv run examples/__main__.py <experiment> [--model <model>]`
+- Scoring: `uv run examples/__main__.py <experiment> --score [--limit N]`
+- Logs: `uv run inspect view`
 
 ## Development
 
