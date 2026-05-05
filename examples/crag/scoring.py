@@ -11,12 +11,7 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 # %%
-"""Inspect scoring for the CRAG skill.
-
-- Run: `uv run examples/cli.py crag`
-- Limit: `uv run examples/cli.py crag --limit 50`
-- Standalone: `uv run examples/crag/scoring.py`
-"""
+"""Inspect scoring for the CRAG skill."""
 
 import math
 import os

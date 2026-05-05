@@ -19,15 +19,15 @@ Examples:
   uv run examples/cli.py triage --limit 5
   LLMBDA_MODEL=openai/gpt-4o uv run examples/cli.py crag --limit 50
 """
+
 from __future__ import annotations
 
 import dataclasses as dc
+import importlib
 import os
 import sys
 from pathlib import Path
 from typing import Literal
-
-import importlib
 
 import simple_parsing as sp
 from inspect_ai import eval as inspect_eval
@@ -45,6 +45,7 @@ class Args:
       gsm8k   — chain-of-thought math with self-verification
       triage  — support ticket classification, routing, repair loop
     """
+
     experiment: Experiment = sp.field(positional=True)
     model: str = os.environ.get("LLMBDA_MODEL", "openai/gpt-4o-mini")
     limit: int = 1
