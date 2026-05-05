@@ -1,18 +1,11 @@
 # %%
-"""Inspect scoring for the support triage skill.
-
-- Run: `uv run examples/triage/scoring.py`
-- Grade: `INSPECT_GRADER=openai/gpt-4o-mini uv run examples/triage/scoring.py`
-- View: `uv run inspect view`
-"""
+"""Inspect scoring for the support triage skill."""
 
 import os
 from pathlib import Path
 
 from inspect_ai import Task
-from inspect_ai import eval as inspect_eval
 from inspect_ai.dataset import Sample
-from inspect_ai.log import EvalLog
 from inspect_ai.scorer import (
     Metric,
     Score,
@@ -26,21 +19,19 @@ from inspect_ai.scorer import (
     stderr,
 )
 from inspect_ai.solver import TaskState
-from skill import (
+
+from tk.llmbda.inspect import skill_solver, step_scorer
+
+from .skill import (
     CLASSIFY,
     DRAFT,
     IDENTIFIERS,
     SUMMARIZE,
     TICKETS,
-    scripted_support_model,
     support_triage,
 )
 
-from tk.llmbda.inspect import passthrough_model, skill_solver, step_scorer
-
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
-_PASSTHROUGH = passthrough_model(scripted_support_model, name="triage")
-INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _PASSTHROUGH)
 
 # %%
 EXPECTED = {
@@ -109,13 +100,6 @@ key details from the request.
 {instructions}
 """
 
-draft_reply_quality = None
-if grader := os.environ.get(gradevar := "INSPECT_GRADER"):
-    g = model_graded_qa(template=REPLY_QUALITY_TEMPLATE, model=grader)
-    draft_reply_quality = step_scorer(DRAFT, g, project=lambda v: v["customer_reply"])
-else:
-    print(f"[W] env: export {gradevar}=openai/gpt-4o-mini")
-
 
 # %%
 _ISSUE_KW = ["refund", "charge", "outage", "escalat", "access", "restore"]
@@ -170,49 +154,60 @@ def final_status_scorer():
 
 
 # %%
-_scorers = [
-    classify_matches_intent,
-    draft_priority_scorer(),
-    draft_reply_heuristic(),
-    final_status_scorer(),
-]
-if draft_reply_quality is not None:
-    _scorers.insert(2, draft_reply_quality)
+def build_task(model: str, limit: int | None = None) -> Task:  # noqa: ARG001
+    """Build Inspect evaluation task for support triage."""
+    samples = EVAL_SAMPLES[:limit] if limit else EVAL_SAMPLES
+    scorers = [
+        classify_matches_intent,
+        draft_priority_scorer(),
+        draft_reply_heuristic(),
+        final_status_scorer(),
+    ]
+    if grader := os.environ.get("INSPECT_GRADER"):
+        g = model_graded_qa(template=REPLY_QUALITY_TEMPLATE, model=grader)
+        quality = step_scorer(DRAFT, g, project=lambda v: v["customer_reply"])
+        scorers.insert(2, quality)
+    return Task(
+        name="support_triage_eval",
+        dataset=samples,
+        solver=skill_solver(support_triage, entry=lambda s: s.metadata["ticket"]),
+        scorer=scorers,
+    )
 
-eval_task = Task(
-    name="support_triage_eval",
-    dataset=EVAL_SAMPLES,
-    solver=skill_solver(support_triage, entry=lambda s: s.metadata["ticket"]),
-    scorer=_scorers,
-)
-
-eval_logs = inspect_eval(
-    eval_task,
-    model=INSPECT_MODEL,
-    display="none",
-    log_dir=_LOG_DIR,
-)
-assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"  # noqa: RUF018
 
 # %%
-print(f"status: {log.status}")
-if log.status != "success":
-    if log.error:
-        print(f"error: {log.error.message}")
-        if log.error.traceback:
-            print(log.error.traceback)
-    raise SystemExit(1)
+if __name__ == "__main__":
+    from inspect_ai import eval as inspect_eval
+    from inspect_ai.log import EvalLog
 
-assert log.results is not None
-for sr in log.results.scores:
-    print(f"\n{sr.name}")
-    for name, mr in sr.metrics.items():
-        print(f"  {name:16s} = {mr.value:.3f}")
+    inspect_model = os.environ.get("INSPECT_MODEL", "none/none")
+    task = build_task(model=inspect_model)
 
-# %%
-assert log.samples is not None
-for sample in log.samples:
-    print(f"\n{sample.id}")
-    assert sample.scores is not None
-    for name, sc in sample.scores.items():
-        print(f"  {name:28s} {sc.value}  ({sc.explanation})")
+    eval_logs = inspect_eval(
+        task,
+        model=inspect_model,
+        display="none",
+        log_dir=_LOG_DIR,
+    )
+    assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"
+
+    print(f"status: {log.status}")
+    if log.status != "success":
+        if log.error:
+            print(f"error: {log.error.message}")
+            if log.error.traceback:
+                print(log.error.traceback)
+        raise SystemExit(1)
+
+    assert log.results is not None
+    for sr in log.results.scores:
+        print(f"\n{sr.name}")
+        for name, mr in sr.metrics.items():
+            print(f"  {name:16s} = {mr.value:.3f}")
+
+    assert log.samples is not None
+    for sample in log.samples:
+        print(f"\n{sample.id}")
+        assert sample.scores is not None
+        for name, sc in sample.scores.items():
+            print(f"  {name:28s} {sc.value}  ({sc.explanation})")

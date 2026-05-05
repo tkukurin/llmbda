@@ -13,10 +13,7 @@ from inspect_ai.model import (
     ChatMessageAssistant,
     ChatMessageSystem,
     ChatMessageUser,
-    GenerateConfig,
-    ModelAPI,
     ModelOutput,
-    modelapi,
 )
 from inspect_ai.scorer import Score, accuracy, mean, scorer, stderr
 from inspect_ai.solver import solver
@@ -51,20 +48,23 @@ def _to_chat_messages(messages: list[dict[str, str]]) -> list:
     ]
 
 
-def _make_async_caller(model_name: str) -> tuple[Callable[..., Any], list]:
-    """Create an async caller and capture request/response pairs."""
+def _make_async_caller(model_name: str) -> tuple[Callable[..., Any], list[str]]:
+    """Create an async caller that routes through Inspect's model.
+
+    Returns (caller, completions) where completions accumulates each response.
+    """
     _cache: list = []
-    message_log: list[tuple[list, str]] = []
+    completions: list[str] = []
 
     async def async_caller(*, messages: list[dict[str, str]], **_kw: Any) -> str:
         if not _cache:
             _cache.append(_get_model(model_name))
         chat_msgs = _to_chat_messages(messages)
         result = await _cache[0].generate(chat_msgs)
-        message_log.append((chat_msgs, result.completion))
+        completions.append(result.completion)
         return result.completion
 
-    return async_caller, message_log
+    return async_caller, completions
 
 
 def _rebind_skill_async(skill: Skill, async_caller: Callable[..., Any]) -> Skill:
@@ -150,19 +150,21 @@ def skill_solver(
             use_inspect_model = model_name != "none/none"
 
             if use_inspect_model:
-                async_caller, message_log = _make_async_caller(model_name)
+                async_caller, completions = _make_async_caller(model_name)
                 patched = _rebind_skill_async(skill, async_caller)
                 trace = await arun_skill(patched, extract(state))
-                for msgs, completion in message_log:
-                    state.messages.extend(msgs)
-                    state.messages.append(ChatMessageAssistant(content=completion))
+                for c in completions:
+                    state.messages.append(ChatMessageAssistant(content=c))
             else:
                 trace = run_skill(skill, extract(state))
             final = last(trace)
+            content = "" if final.value is None else str(final.value)
             state.output = ModelOutput.from_content(
                 model=model_name,
-                content="" if final.value is None else str(final.value),
+                content=content,
             )
+            if not state.messages or state.messages[-1].role != "assistant":
+                state.messages.append(ChatMessageAssistant(content=content))
             if state.metadata is None:
                 state.metadata = {}
             state.metadata[trace_key] = trace
@@ -244,68 +246,8 @@ def _inherit_metrics(inner: Scorer) -> list | None:
         return None
 
 
-_PASSTHROUGH_REGISTRY: dict[str, Any] = {}
-
-
-_DEFAULT_CONFIG = GenerateConfig()
-
-
-@modelapi(name="llmbda")
-class _PassthroughModelAPI(ModelAPI):
-    """Inspect `ModelAPI` that delegates to a registered caller."""
-
-    def __init__(
-        self,
-        model_name: str = "llmbda/default",
-        base_url: str | None = None,
-        api_key: str | None = None,
-        api_key_vars: list[str] | None = None,
-        config: GenerateConfig = _DEFAULT_CONFIG,
-    ) -> None:
-        super().__init__(
-            model_name=model_name,
-            base_url=base_url,
-            api_key=api_key,
-            api_key_vars=api_key_vars or [],
-            config=config,
-        )
-
-    async def generate(
-        self,
-        input,  # noqa: A002
-        tools,  # noqa: ARG002
-        tool_choice,  # noqa: ARG002
-        config,  # noqa: ARG002
-    ):
-        name = (
-            self.model_name.split("/", 1)[-1]
-            if "/" in self.model_name
-            else self.model_name
-        )
-        fn = _PASSTHROUGH_REGISTRY[name]
-        messages = []
-        for m in input:
-            if isinstance(m, ChatMessageSystem):
-                messages.append({"role": "system", "content": m.content})
-            elif isinstance(m, ChatMessageUser):
-                messages.append({"role": "user", "content": m.content})
-            else:
-                messages.append({"role": "assistant", "content": m.content})
-        result = fn(messages=messages)
-        if asyncio.iscoroutine(result):
-            result = await result
-        return ModelOutput.from_content(model=self.model_name, content=result)
-
-
-def passthrough_model(fn: Any, name: str = "default") -> str:
-    """Register a callable as an Inspect model and return its model name."""
-    _PASSTHROUGH_REGISTRY[name] = fn
-    return f"llmbda/{name}"
-
-
 __all__ = [
     "DEFAULT_TRACE_KEY",
-    "passthrough_model",
     "skill_solver",
     "step_check",
     "step_scorer",

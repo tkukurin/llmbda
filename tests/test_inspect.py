@@ -59,6 +59,62 @@ def test_skill_solver_sets_completion_and_trace():
     assert trace["identifiers"].meta == {"raw": "ticket body"}
 
 
+def test_skill_solver_messages_show_input_and_final_output():
+    """Messages = [assistant with last step output] for non-lm skills."""
+    solver = skill_solver(_skill())
+    state = _make_state(input_text="ticket body")
+    out = asyncio.run(solver(state, None))
+
+    assert len(out.messages) == 1
+    assert out.messages[0].role == "assistant"
+    assert out.messages[0].content == out.output.completion
+    assert "Draft mentioning ID-1" in out.messages[0].content
+
+
+def test_skill_solver_messages_only_last_step_not_intermediate():
+    """Multi-step non-lm: only final step output in messages."""
+
+    def step_a(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="intermediate reasoning")
+
+    def step_b(_ctx: SkillContext) -> StepResult:
+        return StepResult(value="final answer is 42")
+
+    def step_c(ctx: SkillContext) -> StepResult:
+        prev = ctx.trace["b"].value
+        return StepResult(value=f"verified: {prev}")
+
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("a", fn=step_a),
+            Skill("b", fn=step_b),
+            Skill("c", fn=step_c),
+        ],
+    )
+    solver = skill_solver(skill)
+    state = _make_state(input_text="what is 6*7?")
+    out = asyncio.run(solver(state, None))
+
+    assert len(out.messages) == 1
+    assert out.messages[0].role == "assistant"
+    assert out.messages[0].content == "verified: final answer is 42"
+
+
+def test_scoring_does_not_modify_messages():
+    """Running a scorer after the solver must not add to messages."""
+    solver = skill_solver(_skill())
+    state = _make_state(input_text="ticket body")
+    out = asyncio.run(solver(state, None))
+
+    messages_before = list(out.messages)
+
+    scorer = step_scorer("draft", match(location="any"))
+    asyncio.run(scorer(out, Target("C")))
+
+    assert out.messages == messages_before
+
+
 def test_skill_solver_custom_entry_extractor():
     def _read_ticket(ctx: SkillContext) -> StepResult:
         return StepResult(value=ctx.entry["body"])
@@ -267,7 +323,7 @@ class TestModelRouting:
         assert out.output.completion == "2025-01-01"
         assert call_log[0][0].content == "Extract dates."
 
-    def test_lm_step_appends_messages(self):
+    def test_lm_step_appends_final_output_only(self):
         from tk.llmbda import lm  # noqa: PLC0415
 
         def fake(*, messages, **kw):  # noqa: ARG001
@@ -282,11 +338,9 @@ class TestModelRouting:
         model, _ = self._mock_model(["model says hi"])
         out = self._run_with_mock(skill, model, input_text="test input")
 
-        assert [m.content for m in out.messages] == [
-            "You are helpful.",
-            "test input",
-            "model says hi",
-        ]
+        assert len(out.messages) == 1
+        assert out.messages[0].role == "assistant"
+        assert out.messages[0].content == "model says hi"
 
     def test_non_lm_steps_unaffected_by_rebind(self):
         def pure_step(ctx: SkillContext) -> StepResult:
@@ -385,4 +439,42 @@ class TestModelRouting:
         out = self._run_with_mock(skill, model)
 
         assert out.output.completion == "A+B"
+        assert len(call_log) == 2
+
+    def test_multi_step_lm_each_response_in_messages(self):
+        """Each @lm step's model response appears as an assistant message."""
+        from tk.llmbda import lm  # noqa: PLC0415
+
+        def fake(*, messages, **kw):  # noqa: ARG001
+            return "unused"
+
+        @lm(fake, system_prompt="Reason step by step.")
+        def reason(ctx: SkillContext, call) -> StepResult:
+            resp = call(messages=[{"role": "user", "content": ctx.entry}])
+            return StepResult(value=resp)
+
+        @lm(fake, system_prompt="Verify the solution.")
+        def verify(ctx: SkillContext, call) -> StepResult:
+            return StepResult(
+                value=call(
+                    messages=[{"role": "user", "content": ctx.trace["reason"].value}]
+                )
+            )
+
+        skill = Skill(
+            name="s",
+            steps=[
+                Skill("reason", fn=reason),
+                Skill("verify", fn=verify),
+            ],
+        )
+        model, call_log = self._mock_model(["Step 1... #### 42", "Verified #### 42"])
+        out = self._run_with_mock(skill, model, input_text="What is 6*7?")
+
+        assert len(out.messages) == 2
+        assert out.messages[0].role == "assistant"
+        assert out.messages[0].content == "Step 1... #### 42"
+        assert out.messages[1].role == "assistant"
+        assert out.messages[1].content == "Verified #### 42"
+        assert out.output.completion == "Verified #### 42"
         assert len(call_log) == 2

@@ -11,12 +11,7 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 # %%
-"""Inspect scoring for the CRAG skill.
-
-- Run: `uv run examples/crag/scoring.py`
-- LLM: `CRAG_MODEL=openai/gpt-4o-mini CRAG_LIMIT=50 uv run examples/crag/scoring.py`
-- View: `uv run inspect view`
-"""
+"""Inspect scoring for the CRAG skill."""
 
 import math
 import os
@@ -30,23 +25,17 @@ from inspect_ai.dataset import Sample, hf_dataset
 from inspect_ai.log import EvalLog
 from inspect_ai.scorer import Score, Target, accuracy, mean, scorer, stderr
 from inspect_ai.solver import TaskState
-from skill import (  # noqa: F401
-    EVALUATE,
+
+from tk.llmbda.inspect import skill_solver
+
+from .skill import (
     GENERATE,
-    MODEL,
-    call_lm,
-    crag,
-    scripted_crag_model,
+    make_skill,
 )
 
-from tk.llmbda.inspect import passthrough_model, skill_solver
-
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
-_SCRIPTED = passthrough_model(scripted_crag_model, name="crag")
-INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _SCRIPTED)
 
 # %%
-_LIMIT = int(os.environ.get("CRAG_LIMIT", "0")) or None
 _TOP_K = int(os.environ.get("CRAG_TOP_K", "5"))
 _WORD_RE = re.compile(r"\w+")
 
@@ -105,14 +94,6 @@ def _record_to_sample(record: dict) -> Sample:
     )
 
 
-EVAL_SAMPLES = hf_dataset(
-    path="hotpot_qa",
-    name="distractor",
-    split="validation",
-    sample_fields=_record_to_sample,
-    limit=_LIMIT,
-)
-
 # %%
 
 
@@ -167,34 +148,49 @@ def answer_em():
 
 
 # %%
-eval_task = Task(
-    name="crag_hotpotqa",
-    dataset=EVAL_SAMPLES,
-    solver=skill_solver(
-        crag,
-        entry=lambda s: {
-            "question": s.metadata["question"],
-            "documents": s.metadata["documents"],
-        },
-    ),
-    scorer=[answer_f1(), answer_em()],
-)
+def build_task(model: str, limit: int | None = None) -> Task:
+    """Create the CRAG evaluation task for a given model and optional sample limit."""
+    samples = hf_dataset(
+        path="hotpot_qa",
+        name="distractor",
+        split="validation",
+        sample_fields=_record_to_sample,
+        limit=limit,
+    )
+    return Task(
+        name="crag_hotpotqa",
+        dataset=samples,
+        solver=skill_solver(
+            make_skill(model),
+            entry=lambda s: {
+                "question": s.metadata["question"],
+                "documents": s.metadata["documents"],
+            },
+        ),
+        scorer=[answer_f1(), answer_em()],
+    )
 
-print(f"model: {MODEL}, inspect_model: {INSPECT_MODEL}, samples: {len(EVAL_SAMPLES)}")
-eval_logs = inspect_eval(eval_task, model=INSPECT_MODEL, log_dir=_LOG_DIR)
-assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"  # noqa: RUF018
 
-# %%
-print(f"\nstatus: {log.status}")
-if log.status != "success":
-    if log.error:
-        print(f"error: {log.error.message}")
-        if log.error.traceback:
-            print(log.error.traceback)
-    raise SystemExit(1)
+if __name__ == "__main__":
+    model = os.environ.get("LLMBDA_MODEL", "openai/gpt-4o-mini")
+    inspect_model = os.environ.get("INSPECT_MODEL", model)
+    limit = int(os.environ.get("CRAG_LIMIT", "0")) or None
 
-assert log.results is not None
-for sr in log.results.scores:
-    print(f"\n{sr.name}")
-    for name, mr in sr.metrics.items():
-        print(f"  {name:16s} = {mr.value:.3f}")
+    eval_task = build_task(model, limit=limit)
+    print(f"model: {model}, inspect_model: {inspect_model}, limit: {limit}")
+    eval_logs = inspect_eval(eval_task, model=inspect_model, log_dir=_LOG_DIR)
+    assert isinstance((log := eval_logs[0]), EvalLog), f"{log=}"
+
+    print(f"\nstatus: {log.status}")
+    if log.status != "success":
+        if log.error:
+            print(f"error: {log.error.message}")
+            if log.error.traceback:
+                print(log.error.traceback)
+        raise SystemExit(1)
+
+    assert log.results is not None
+    for sr in log.results.scores:
+        print(f"\n{sr.name}")
+        for name, mr in sr.metrics.items():
+            print(f"  {name:16s} = {mr.value:.3f}")

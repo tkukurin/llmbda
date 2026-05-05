@@ -208,21 +208,10 @@ testable = lm(fake_model)(extract_date.__wrapped__)
 
 ## Examples
 
+All experiments run from a single entrypoint:
+
 ```bash
-# deterministic + LLM date extraction with retry (uses litellm)
-uv run examples/date_extraction.py
-
-# calendar booking: regex parsers + LLM verifier
-uv run examples/calendar_booking.py
-
-# support triage: extraction, classification, validation loop
-uv run examples/triage/main.py
-
-# same skill, scored step-by-step with Inspect AI (see section below)
-uv run examples/triage/scoring.py
-
-# all 20 use cases in one file (no external deps)
-uv run examples/showcase.py
+uv run examples/cli.py crag --model openai/gpt-4o --limit 10
 ```
 
 ## Inspect AI integration
@@ -232,16 +221,14 @@ uv run examples/showcase.py
 - When the Inspect model isn't `none/none`, `@lm` steps are rebound to call Inspect's model via `arun_skill`.
 - `step_scorer(name, inner)` scores a named step value instead of the final completion.
 - `step_check(name, predicate)` scores a named `StepResult`.
-- `passthrough_model(fn, name=...)` registers scripted or offline callers as Inspect models.
-- Routed calls show up in the transcript as `ModelEvent` entries and populate the `Messages` tab.
+- Each model response appears as an assistant message in the Messages tab.
+- Full request/response pairs with token usage show up in the Transcript as `ModelEvent` entries.
 
 ```python
 from inspect_ai import Task
 from inspect_ai import eval as inspect_eval
 from inspect_ai.scorer import match, model_graded_qa
-from tk.llmbda.inspect import passthrough_model, skill_solver, step_scorer
-
-inspect_model = passthrough_model(scripted_model, name="offline")
+from tk.llmbda.inspect import skill_solver, step_scorer
 
 eval_task = Task(
     dataset=tickets,
@@ -253,23 +240,21 @@ eval_task = Task(
     ],
 )
 
-inspect_eval(eval_task, model=inspect_model, log_dir="logs")
+inspect_eval(eval_task, model="openai/gpt-4o-mini", log_dir="logs")
 ```
 
 - `entry=` customises how `skill_solver` reads `TaskState` (default: `s.input_text`).
 - `project=` stringifies non-`str` step values before the inner scorer sees them.
 - Metrics default to the inner scorer's metrics; override with `metrics=[...]`.
+- `model="none/none"` runs the skill with its native `@lm` callers (useful for scripted tests).
 - `inspect_eval(...)` logs land under `./logs/`.
 
 ### Install and run
 
-- Library use: `pip install tk-llmbda[inspect]`
-- Repo setup: `uv sync`
-- Examples:
-  - `uv run examples/triage/scoring.py`
-  - `uv run examples/crag/scoring.py`
-  - `uv run examples/gsm8k/scoring.py`
-  - `uv run inspect view`
+- Library: `pip install tk-llmbda[inspect]`
+- Repo: `uv sync`
+- Demo: `uv run examples/cli.py <experiment> [--model <model>] [--limit N]`
+- Logs: `uv run inspect view`
 
 ## Development
 
