@@ -11,6 +11,7 @@ from tk.llmbda import (
     Skill,
     SkillContext,
     StepResult,
+    last,
     lm,
     run_skill,
     strip_fences,
@@ -369,6 +370,15 @@ support_triage = Skill(
     ],
 )
 
+def runxp(model: str):
+    """Run support triage on bundled tickets."""
+    for ticket in TICKETS:
+        trace = run_skill(support_triage, ticket)
+        result = last(trace)
+        print(f"\n{ticket['id']} \u00b7 {ticket['subject']}")
+        print(f"  priority={result.value['priority']} route={result.value['route']} status={result.value['status']}")
+
+
 __all__ = [
     "CLASSIFY",
     "DRAFT",
@@ -379,6 +389,7 @@ __all__ = [
     "TICKETS",
     "URGENCY",
     "run_skill",
+    "runxp",
     "scripted_support_model",
     "support_triage",
 ]

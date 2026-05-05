@@ -30,16 +30,15 @@ from inspect_ai.dataset import Sample, hf_dataset
 from inspect_ai.log import EvalLog
 from inspect_ai.scorer import Score, Target, accuracy, mean, scorer, stderr
 from inspect_ai.solver import TaskState
-from skill import (  # noqa: F401
-    EVALUATE,
+from skill import (
     GENERATE,
-    MODEL,
-    crag,
+    make_skill,
 )
 
 from tk.llmbda.inspect import skill_solver
 
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
+MODEL = os.environ.get("LLMBDA_MODEL", "openai/gpt-4o-mini")
 INSPECT_MODEL = os.environ.get("INSPECT_MODEL", MODEL)
 
 # %%
@@ -168,7 +167,7 @@ eval_task = Task(
     name="crag_hotpotqa",
     dataset=EVAL_SAMPLES,
     solver=skill_solver(
-        crag,
+        make_skill(MODEL),
         entry=lambda s: {
             "question": s.metadata["question"],
             "documents": s.metadata["documents"],

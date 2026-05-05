@@ -3,7 +3,7 @@
 
 - Run: `uv run examples/triage/scoring.py`
 - LLM: `INSPECT_MODEL=openai/gpt-4o-mini uv run examples/triage/scoring.py`
-- Grade: `INSPECT_MODEL=openai/gpt-4o-mini INSPECT_GRADER=openai/gpt-4o-mini uv run examples/triage/scoring.py`
+- Grade: `INSPECT_GRADER=openai/gpt-4o-mini uv run examples/triage/scoring.py`
 - View: `uv run inspect view`
 """
 

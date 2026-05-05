@@ -14,7 +14,7 @@
 """Inspect evaluation for the GSM8K solver skill.
 
 - Run: `GSM8K_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
-- Limit: `GSM8K_LIMIT=50 GSM8K_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
+- Limit: `GSM8K_LIMIT=50 uv run examples/gsm8k/scoring.py`
 - View: `uv run inspect view`
 """
 
@@ -28,11 +28,12 @@ from inspect_ai import eval as inspect_eval
 from inspect_ai.dataset import Sample, hf_dataset
 from inspect_ai.log import EvalLog
 from inspect_ai.scorer import match
-from skill import MODEL, gsm8k
+from skill import make_skill
 
 from tk.llmbda.inspect import skill_solver
 
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
+MODEL = os.environ.get("LLMBDA_MODEL", "openai/gpt-4o-mini")
 INSPECT_MODEL = os.environ.get("INSPECT_MODEL", MODEL)
 
 # %%
@@ -57,7 +58,7 @@ EVAL_SAMPLES = hf_dataset(
 eval_task = Task(
     name="gsm8k",
     dataset=EVAL_SAMPLES,
-    solver=skill_solver(gsm8k, entry=lambda s: s.input_text),
+    solver=skill_solver(make_skill(MODEL), entry=lambda s: s.input_text),
     scorer=match(numeric=True),
 )
 
