@@ -34,7 +34,6 @@ from skill import (  # noqa: F401
     EVALUATE,
     GENERATE,
     MODEL,
-    call_lm,
     crag,
 )
 

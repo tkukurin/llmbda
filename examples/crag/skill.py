@@ -35,11 +35,6 @@ GENERATE = "ψ::generate"
 MODEL = os.environ.get("CRAG_MODEL", "openai/gpt-4o-mini")
 
 
-def call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
-    resp = completion(model=MODEL, messages=messages, **kw)
-    return resp.choices[0].message.content  # type: ignore[union-attr]
-
-
 def scripted_crag_model(*, messages: list[dict[str, str]], **_kw: Any) -> str:
     """Zero-dependency scripted model for demo runs."""
     system = (
