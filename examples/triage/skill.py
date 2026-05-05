@@ -370,13 +370,14 @@ support_triage = Skill(
     ],
 )
 
-def runxp(model: str):
+def runxp(_model: str):
     """Run support triage on bundled tickets."""
     for ticket in TICKETS:
         trace = run_skill(support_triage, ticket)
         result = last(trace)
+        v = result.value
         print(f"\n{ticket['id']} \u00b7 {ticket['subject']}")
-        print(f"  priority={result.value['priority']} route={result.value['route']} status={result.value['status']}")
+        print(f"  priority={v['priority']} route={v['route']} status={v['status']}")
 
 
 __all__ = [

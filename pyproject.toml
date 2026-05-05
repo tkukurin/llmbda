@@ -95,4 +95,5 @@ ignore = [
   "TC003",
   "TD002",   # TODOs in examples don't need author attribution
   "TD003",   # or an issue link
+  "RUF009",  # dataclass field defaults (simple_parsing requires sp.field())
 ]

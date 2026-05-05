@@ -35,7 +35,10 @@ class Args:
 
 def getargs(**overrides) -> Args:
     """Parse from CLI in scripts, use overrides interactively."""
-    interactive = not hasattr(sys.modules.get("__main__"), "__file__") or "ipykernel" in sys.modules
+    interactive = (
+        not hasattr(sys.modules.get("__main__"), "__file__")
+        or "ipykernel" in sys.modules
+    )
     return Args(**overrides) if interactive else sp.parse(Args)
 
 

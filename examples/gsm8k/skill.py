@@ -15,7 +15,15 @@ from typing import Any
 
 from litellm import completion
 
-from tk.llmbda import LMCaller, Skill, SkillContext, StepResult, lm, last, run_skill
+from tk.llmbda import (
+    LMCaller,
+    Skill,
+    SkillContext,
+    StepResult,
+    last,
+    lm,
+    run_skill,
+)
 
 REASON = "ψ::reason"
 VERIFY = "ψ::verify"
@@ -48,7 +56,10 @@ def make_skill(model: str) -> Skill:
         prompt = f"Problem: {ctx.entry}\n\nSolution to verify:\n{reasoning}"
         return StepResult(value=call(messages=[{"role": "user", "content": prompt}]))
 
-    return Skill(name="gsm8k", steps=[Skill(REASON, fn=reason), Skill(VERIFY, fn=verify)])
+    return Skill(
+        name="gsm8k",
+        steps=[Skill(REASON, fn=reason), Skill(VERIFY, fn=verify)],
+    )
 
 
 def runxp(model: str):

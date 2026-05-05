@@ -16,7 +16,16 @@ from typing import Any
 
 from litellm import completion
 
-from tk.llmbda import LMCaller, Skill, SkillContext, StepResult, lm, last, run_skill, strip_fences
+from tk.llmbda import (
+    LMCaller,
+    Skill,
+    SkillContext,
+    StepResult,
+    last,
+    lm,
+    run_skill,
+    strip_fences,
+)
 
 RELEVANCE = "ψ::relevance"
 GENERATE = "ψ::generate"
@@ -66,7 +75,10 @@ def make_skill(model: str) -> Skill:
             meta={"n_docs_used": len(relevant_docs)},
         )
 
-    return Skill(name="crag", steps=[Skill(RELEVANCE, fn=relevance), Skill(GENERATE, fn=generate)])
+    return Skill(
+        name="crag",
+        steps=[Skill(RELEVANCE, fn=relevance), Skill(GENERATE, fn=generate)],
+    )
 
 
 def runxp(model: str):
