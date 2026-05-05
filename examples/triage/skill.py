@@ -370,6 +370,7 @@ support_triage = Skill(
     ],
 )
 
+
 def runxp(_model: str):
     """Run support triage on bundled tickets."""
     for ticket in TICKETS:

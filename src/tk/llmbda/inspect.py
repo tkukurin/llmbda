@@ -160,7 +160,8 @@ def skill_solver(
             final = last(trace)
             content = "" if final.value is None else str(final.value)
             state.output = ModelOutput.from_content(
-                model=model_name, content=content,
+                model=model_name,
+                content=content,
             )
             if not state.messages or state.messages[-1].role != "assistant":
                 state.messages.append(ChatMessageAssistant(content=content))

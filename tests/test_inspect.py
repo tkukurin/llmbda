@@ -84,11 +84,14 @@ def test_skill_solver_messages_only_last_step_not_intermediate():
         prev = ctx.trace["b"].value
         return StepResult(value=f"verified: {prev}")
 
-    skill = Skill(name="s", steps=[
-        Skill("a", fn=step_a),
-        Skill("b", fn=step_b),
-        Skill("c", fn=step_c),
-    ])
+    skill = Skill(
+        name="s",
+        steps=[
+            Skill("a", fn=step_a),
+            Skill("b", fn=step_b),
+            Skill("c", fn=step_c),
+        ],
+    )
     solver = skill_solver(skill)
     state = _make_state(input_text="what is 6*7?")
     out = asyncio.run(solver(state, None))
@@ -110,7 +113,6 @@ def test_scoring_does_not_modify_messages():
     asyncio.run(scorer(out, Target("C")))
 
     assert out.messages == messages_before
-
 
 
 def test_skill_solver_custom_entry_extractor():
@@ -453,14 +455,19 @@ class TestModelRouting:
 
         @lm(fake, system_prompt="Verify the solution.")
         def verify(ctx: SkillContext, call) -> StepResult:
-            return StepResult(value=call(
-                messages=[{"role": "user", "content": ctx.trace["reason"].value}]
-            ))
+            return StepResult(
+                value=call(
+                    messages=[{"role": "user", "content": ctx.trace["reason"].value}]
+                )
+            )
 
-        skill = Skill(name="s", steps=[
-            Skill("reason", fn=reason),
-            Skill("verify", fn=verify),
-        ])
+        skill = Skill(
+            name="s",
+            steps=[
+                Skill("reason", fn=reason),
+                Skill("verify", fn=verify),
+            ],
+        )
         model, call_log = self._mock_model(["Step 1... #### 42", "Verified #### 42"])
         out = self._run_with_mock(skill, model, input_text="What is 6*7?")
 

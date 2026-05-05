@@ -9,6 +9,7 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 """GSM8K solver: chain-of-thought reasoning with self-verification."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -42,6 +43,7 @@ VERIFY_PROMPT = (
 
 def make_skill(model: str) -> Skill:
     """Build gsm8k skill bound to the given model."""
+
     def call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
         resp = completion(model=model, messages=messages, **kw)
         return resp.choices[0].message.content

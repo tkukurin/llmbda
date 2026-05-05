@@ -9,6 +9,7 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 """CRAG skill: 2-step elicitation (RELEVANCE retrieval, then generate answer)."""
+
 from __future__ import annotations
 
 import json
@@ -42,6 +43,7 @@ Return ONLY JSON: {"answer": "<short factoid answer>"}"""
 
 def make_skill(model: str) -> Skill:
     """Build crag skill bound to the given model."""
+
     def call_lm(*, messages: list[dict[str, str]], **kw: Any) -> str:
         resp = completion(model=model, messages=messages, **kw)
         return resp.choices[0].message.content
