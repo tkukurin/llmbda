@@ -13,9 +13,8 @@
 # %%
 """Inspect evaluation for the GSM8K solver skill.
 
-- Run: `uv run examples/gsm8k/scoring.py`
-- LLM: `GSM8K_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
-- Limit: `GSM8K_LIMIT=50 uv run examples/gsm8k/scoring.py`
+- Run: `GSM8K_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
+- Limit: `GSM8K_LIMIT=50 GSM8K_MODEL=openai/gpt-4o-mini uv run examples/gsm8k/scoring.py`
 - View: `uv run inspect view`
 """
 
@@ -29,13 +28,12 @@ from inspect_ai import eval as inspect_eval
 from inspect_ai.dataset import Sample, hf_dataset
 from inspect_ai.log import EvalLog
 from inspect_ai.scorer import match
-from skill import MODEL, call_lm, gsm8k
+from skill import MODEL, gsm8k
 
-from tk.llmbda.inspect import passthrough_model, skill_solver
+from tk.llmbda.inspect import skill_solver
 
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
-_PASSTHROUGH = passthrough_model(call_lm, name="gsm8k")
-INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _PASSTHROUGH)
+INSPECT_MODEL = os.environ.get("INSPECT_MODEL", MODEL)
 
 # %%
 _ANSWER_DELIM = "####"

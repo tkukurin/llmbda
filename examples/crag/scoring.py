@@ -13,8 +13,8 @@
 # %%
 """Inspect scoring for the CRAG skill.
 
-- Run: `uv run examples/crag/scoring.py`
-- LLM: `CRAG_MODEL=openai/gpt-4o-mini CRAG_LIMIT=50 uv run examples/crag/scoring.py`
+- Run: `CRAG_MODEL=openai/gpt-4o-mini uv run examples/crag/scoring.py`
+- Limit: `CRAG_MODEL=openai/gpt-4o-mini CRAG_LIMIT=50 uv run examples/crag/scoring.py`
 - View: `uv run inspect view`
 """
 
@@ -36,14 +36,12 @@ from skill import (  # noqa: F401
     MODEL,
     call_lm,
     crag,
-    scripted_crag_model,
 )
 
-from tk.llmbda.inspect import passthrough_model, skill_solver
+from tk.llmbda.inspect import skill_solver
 
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
-_SCRIPTED = passthrough_model(scripted_crag_model, name="crag")
-INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _SCRIPTED)
+INSPECT_MODEL = os.environ.get("INSPECT_MODEL", MODEL)
 
 # %%
 _LIMIT = int(os.environ.get("CRAG_LIMIT", "0")) or None

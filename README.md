@@ -232,16 +232,14 @@ uv run examples/showcase.py
 - When the Inspect model isn't `none/none`, `@lm` steps are rebound to call Inspect's model via `arun_skill`.
 - `step_scorer(name, inner)` scores a named step value instead of the final completion.
 - `step_check(name, predicate)` scores a named `StepResult`.
-- `passthrough_model(fn, name=...)` registers scripted or offline callers as Inspect models.
-- Routed calls show up in the transcript as `ModelEvent` entries and populate the `Messages` tab.
+- Each model response appears as an assistant message in the Messages tab.
+- Full request/response pairs with token usage show up in the Transcript as `ModelEvent` entries.
 
 ```python
 from inspect_ai import Task
 from inspect_ai import eval as inspect_eval
 from inspect_ai.scorer import match, model_graded_qa
-from tk.llmbda.inspect import passthrough_model, skill_solver, step_scorer
-
-inspect_model = passthrough_model(scripted_model, name="offline")
+from tk.llmbda.inspect import skill_solver, step_scorer
 
 eval_task = Task(
     dataset=tickets,
@@ -253,12 +251,13 @@ eval_task = Task(
     ],
 )
 
-inspect_eval(eval_task, model=inspect_model, log_dir="logs")
+inspect_eval(eval_task, model="openai/gpt-4o-mini", log_dir="logs")
 ```
 
 - `entry=` customises how `skill_solver` reads `TaskState` (default: `s.input_text`).
 - `project=` stringifies non-`str` step values before the inner scorer sees them.
 - Metrics default to the inner scorer's metrics; override with `metrics=[...]`.
+- `model="none/none"` runs the skill with its native `@lm` callers (useful for scripted tests).
 - `inspect_eval(...)` logs land under `./logs/`.
 
 ### Install and run

@@ -2,7 +2,8 @@
 """Inspect scoring for the support triage skill.
 
 - Run: `uv run examples/triage/scoring.py`
-- Grade: `INSPECT_GRADER=openai/gpt-4o-mini uv run examples/triage/scoring.py`
+- LLM: `INSPECT_MODEL=openai/gpt-4o-mini uv run examples/triage/scoring.py`
+- Grade: `INSPECT_MODEL=openai/gpt-4o-mini INSPECT_GRADER=openai/gpt-4o-mini uv run examples/triage/scoring.py`
 - View: `uv run inspect view`
 """
 
@@ -32,15 +33,13 @@ from skill import (
     IDENTIFIERS,
     SUMMARIZE,
     TICKETS,
-    scripted_support_model,
     support_triage,
 )
 
-from tk.llmbda.inspect import passthrough_model, skill_solver, step_scorer
+from tk.llmbda.inspect import skill_solver, step_scorer
 
 _LOG_DIR = str(Path(__file__).resolve().parents[2] / "logs")
-_PASSTHROUGH = passthrough_model(scripted_support_model, name="triage")
-INSPECT_MODEL = os.environ.get("INSPECT_MODEL", _PASSTHROUGH)
+INSPECT_MODEL = os.environ.get("INSPECT_MODEL", "none/none")
 
 # %%
 EXPECTED = {
