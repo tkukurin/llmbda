@@ -1,5 +1,25 @@
 #!/bin/sh
 set -e
-uv run ruff check .
-uv run ruff format --check . || { echo "Run 'uv run ruff format .' to fix formatting."; exit 1; }
+
+remote="$1"
+url="$2"
+
+# Collect Python files changed between local and remote for all refs being pushed
+files=""
+while read local_ref local_oid remote_ref remote_oid; do
+    if [ "$remote_oid" = "0000000000000000000000000000000000000000" ]; then
+        range="$local_oid"
+    else
+        range="$remote_oid..$local_oid"
+    fi
+    files="$files $(git diff --name-only --diff-filter=d "$range" -- '*.py')"
+done
+
+files=$(echo "$files" | xargs -n1 | sort -u | xargs)
+if [ -z "$files" ]; then
+    exit 0
+fi
+
+uv run ruff check $files
+uv run ruff format --check $files || { echo "Run 'uv run ruff format' to fix."; exit 1; }
 uv run pytest -m "not e2e" -q
