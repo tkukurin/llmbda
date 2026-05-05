@@ -1,9 +1,5 @@
 # %%
-"""Inspect scoring for the support triage skill.
-
-- Run: `uv run examples/__main__.py triage --score`
-- Standalone: `uv run examples/triage/scoring.py`
-"""
+"""Inspect scoring for the support triage skill."""
 
 import os
 from pathlib import Path
@@ -158,7 +154,7 @@ def final_status_scorer():
 
 
 # %%
-def build_task(_model: str, limit: int | None = None) -> Task:
+def build_task(model: str, limit: int | None = None) -> Task:  # noqa: ARG001
     """Build Inspect evaluation task for support triage."""
     samples = EVAL_SAMPLES[:limit] if limit else EVAL_SAMPLES
     scorers = [

@@ -13,8 +13,8 @@
 # %%
 """Inspect scoring for the CRAG skill.
 
-- Run: `uv run examples/__main__.py crag --score`
-- Limit: `uv run examples/__main__.py crag --score --limit 50`
+- Run: `uv run examples/cli.py crag`
+- Limit: `uv run examples/cli.py crag --limit 50`
 - Standalone: `uv run examples/crag/scoring.py`
 """
 

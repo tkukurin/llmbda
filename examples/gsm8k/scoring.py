@@ -11,12 +11,7 @@
 # tk-llmbda = { path = "../../", editable = true }
 # ///
 # %%
-"""Inspect evaluation for the GSM8K solver skill.
-
-- Run: `uv run examples/__main__.py gsm8k --score`
-- Limit: `uv run examples/__main__.py gsm8k --score --limit 50`
-- Standalone: `uv run examples/gsm8k/scoring.py`
-"""
+"""Inspect evaluation for the GSM8K solver skill."""
 from __future__ import annotations
 
 import os

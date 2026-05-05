@@ -211,27 +211,7 @@ testable = lm(fake_model)(extract_date.__wrapped__)
 All experiments run from a single entrypoint:
 
 ```bash
-# quick demo (runs skill on a sample input)
-uv run examples/__main__.py crag
-uv run examples/__main__.py gsm8k
-uv run examples/__main__.py triage
-
-# override model
-uv run examples/__main__.py crag --model openai/gpt-4o
-LLMBDA_MODEL=anthropic/claude-sonnet-4-20250514 uv run examples/__main__.py gsm8k
-
-# full Inspect AI evaluation
-uv run examples/__main__.py gsm8k --score --limit 50
-uv run examples/__main__.py crag --score
-INSPECT_MODEL=none/none uv run examples/__main__.py triage --score
-```
-
-Standalone examples (no API key needed):
-
-```bash
-uv run examples/calendar_booking.py
-uv run examples/showcase.py
-uv run examples/date_extraction.py  # needs LITELLM-compatible API key
+uv run examples/cli.py crag --model openai/gpt-4o --limit 10
 ```
 
 ## Inspect AI integration
@@ -273,8 +253,7 @@ inspect_eval(eval_task, model="openai/gpt-4o-mini", log_dir="logs")
 
 - Library: `pip install tk-llmbda[inspect]`
 - Repo: `uv sync`
-- Demo: `uv run examples/__main__.py <experiment> [--model <model>]`
-- Scoring: `uv run examples/__main__.py <experiment> --score [--limit N]`
+- Demo: `uv run examples/cli.py <experiment> [--model <model>] [--limit N]`
 - Logs: `uv run inspect view`
 
 ## Development
