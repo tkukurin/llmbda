@@ -74,10 +74,10 @@ def test_skill_solver_messages_show_input_and_final_output():
 def test_skill_solver_messages_only_last_step_not_intermediate():
     """Multi-step non-lm: only final step output in messages."""
 
-    def step_a(ctx: SkillContext) -> StepResult:
+    def step_a(_ctx: SkillContext) -> StepResult:
         return StepResult(value="intermediate reasoning")
 
-    def step_b(ctx: SkillContext) -> StepResult:
+    def step_b(_ctx: SkillContext) -> StepResult:
         return StepResult(value="final answer is 42")
 
     def step_c(ctx: SkillContext) -> StepResult:
@@ -448,7 +448,8 @@ class TestModelRouting:
 
         @lm(fake, system_prompt="Reason step by step.")
         def reason(ctx: SkillContext, call) -> StepResult:
-            return StepResult(value=call(messages=[{"role": "user", "content": ctx.entry}]))
+            resp = call(messages=[{"role": "user", "content": ctx.entry}])
+            return StepResult(value=resp)
 
         @lm(fake, system_prompt="Verify the solution.")
         def verify(ctx: SkillContext, call) -> StepResult:
